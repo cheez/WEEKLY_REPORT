@@ -68,8 +68,8 @@ else:
         with st.form("add_member_form", clear_on_submit=True):
             col1, col2, col3 = st.columns(3)
             m_name = col1.text_input("이름")
-            m_role = col2.selectbox("직군", ["개발자", "디자이너", "기획자", "QA", "기타"])
-            m_mm = col3.number_input("투입률 (MM)", min_value=0.1, max_value=1.0, value=1.0, step=0.1)
+            m_role = col2.selectbox("직군", ["개발자","디자이너","기획자","퍼블리셔","RO","UI/UX", "PM","플랫폼PM","QA", "기타"])
+            m_mm = col3.number_input("투입률 (MM)", min_value=0.1, max_value=1.0, value=1.0, step=0.5)
             
             if st.form_submit_button("DB에 팀원 등록"):
                 if m_name:
