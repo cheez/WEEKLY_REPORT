@@ -161,11 +161,11 @@ else:
         member_names = [m["name"] for m in members_data] if members_data else []
 
         with st.form("add_v_form", clear_on_submit=True):
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
             v_date = col2.date_input("날짜", date.today())
             v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차(오전) (4h)", "반차(오후) (4h)", "공가/병가 (8h)"])
-            v_reason = col4.text_input("사유", "개인사유")
+            v_reason = st.text_input("사유", "개인사유")
             
             if st.form_submit_button("휴가 추가"):
                 if v_name:
@@ -190,7 +190,7 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (관리자 전용)
+    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (휴가 MM비례 계산 반영)
     # =========================================================
     elif menu == "3. 엑셀 업로드 및 위클리 리포트 생성":
         st.title("📈 위클리 근무 공수 & 가동률 리포트 생성")
@@ -213,11 +213,15 @@ else:
 
             db_members = supabase.table("members").select("*").execute().data
 
+            user_mm_map = {}
             if db_members:
                 df_db_m = pd.DataFrame(db_members)
                 df_db_m["mm"] = pd.to_numeric(df_db_m["mm"], errors="coerce").fillna(0.0)
                 db_role_mm_map = df_db_m.groupby("role")["mm"].sum().to_dict()
                 mm_table = pd.DataFrame([{"Role": r, "MM": db_role_mm_map.get(r, 0.0)} for r in ROLE_LIST])
+                
+                for m in db_members:
+                    user_mm_map[clean_name(m["name"])] = float(m.get("mm", 1.0))
             else:
                 mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
 
@@ -251,13 +255,16 @@ else:
             df_raw["W4_hours"] = df_raw[w4_cols].sum(axis=1) if w4_cols else 0.0
             df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0) if "Total (h)" in df_raw.columns else df_raw[date_cols].sum(axis=1)
 
+            # 🔥 개인 MM 비례 휴가 인정시간 계산
             vac_data = supabase.table("vacations").select("*").execute().data
             vac_w1_map, vac_w2_map, vac_w3_map, vac_w4_map, vac_month_map = {}, {}, {}, {}, {}
 
             if vac_data:
                 for v in vac_data:
                     v_user_clean = clean_name(v["name"])
-                    h = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
+                    user_mm = user_mm_map.get(v_user_clean, 1.0)
+                    base_h = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
+                    h = base_h * user_mm  # 비례 가산
                     v_dt = str(v.get("v_date", ""))
 
                     if "-08-" in v_dt or "2026-08" in v_dt:
@@ -286,12 +293,12 @@ else:
             role_sum = df_raw.groupby("Role")[["Month_총실공수", "W1_총실공수", "W2_총실공수", "W3_총실공수", "W4_총실공수"]].sum().reset_index()
             report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
 
-            w1_days = count_working_days(date(2026, 8, 3), date(2026, 8, 7))   # 5
-            w2_days = count_working_days(date(2026, 8, 10), date(2026, 8, 14)) # 5
-            w3_days = count_working_days(date(2026, 8, 17), date(2026, 8, 21)) # 4
-            w4_days = count_working_days(date(2026, 8, 24), date(2026, 8, 28)) # 5
+            w1_days = count_working_days(date(2026, 8, 3), date(2026, 8, 7))   # 5일
+            w2_days = count_working_days(date(2026, 8, 10), date(2026, 8, 14)) # 5일
+            w3_days = count_working_days(date(2026, 8, 17), date(2026, 8, 21)) # 4일 (8/17 대체공휴일)
+            w4_days = count_working_days(date(2026, 8, 24), date(2026, 8, 28)) # 5일
 
-            elapsed_days = w1_days + w2_days  # 10일
+            elapsed_days = w1_days + w2_days  # 10일 (2주차 마감 기준)
 
             report_df["8월 1W"] = report_df.apply(
                 lambda r: f"{round(r['W1_총실공수'] / (8.0 * r['MM'] * w1_days) * 100)}%" if r["MM"] > 0 else "-", axis=1
@@ -378,7 +385,7 @@ else:
                 st.success(f"'{report_name}'가 DB에 성공적으로 저장되었습니다!")
 
     # =========================================================
-    # 메뉴 4: 과거 보고서 조회 (드롭다운에 명칭+날짜 표기 및 스타일링 적용)
+    # 메뉴 4: 과거 보고서 조회
     # =========================================================
     elif menu == "4. 과거 보고서 저장 이력 조회":
         st.title("📂 저장된 위클리 보고서 이력 조회")
@@ -389,7 +396,6 @@ else:
             df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
             st.dataframe(df_r, use_container_width=True)
 
-            # 🔥 [수정] 보고서 ID + 보고서 명칭 + 일시를 묶어서 선택 옵션 구성
             report_options = {
                 f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
                 for r in reports_data
@@ -404,19 +410,16 @@ else:
                 
                 df_detail = pd.DataFrame(detail["excel_data"])
 
-                # 컬럼 순서 완벽 고정
                 expected_cols = ["구분", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "월간 누적 실공수(h)"]
                 actual_cols = [c for c in expected_cols if c in df_detail.columns]
                 actual_cols += [c for c in df_detail.columns if c not in actual_cols]
                 df_detail = df_detail[actual_cols]
 
-                # 숫자형 변환 및 포맷
                 if "MM" in df_detail.columns:
                     df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
                 if "월간 누적 실공수(h)" in df_detail.columns:
                     df_detail["월간 누적 실공수(h)"] = pd.to_numeric(df_detail["월간 누적 실공수(h)"], errors="coerce").fillna(0.0)
 
-                # 스타일 및 색상 적용
                 st_view = df_detail.style
                 if "판단" in df_detail.columns:
                     st_view = st_view.map(highlight_status, subset=["판단"])
