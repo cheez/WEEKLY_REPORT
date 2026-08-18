@@ -130,7 +130,7 @@ else:
         member_names = [m["name"] for m in members_data] if members_data else []
 
         with st.form("add_v_form", clear_on_submit=True):
-            col1, col2, col3 = st.columns(4)
+            col1, col2, col3, col4 = st.columns(4)
             v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
             v_date = col2.date_input("날짜", date.today())
             v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차(오전) (4h)", "반차(오후) (4h)", "공가/병가 (8h)"])
@@ -159,7 +159,7 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (누적 가동률 기준 계산)
+    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (월 누적 기준 판단 적용)
     # =========================================================
     elif menu == "3. 엑셀 업로드 및 위클리 리포트 생성":
         st.title("📈 위클리 근무 공수 & 가동률 리포트")
@@ -252,7 +252,7 @@ else:
             role_sum = df_raw.groupby("Role")[["Month_총실공수", "W1_총실공수", "W2_총실공수"]].sum().reset_index()
             report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
 
-            # 주차별 가동률 계산 (주 5일 기준 = 8h * MM * 5일 = 40h * MM)
+            # 주차별 가동률 계산 (정수 반올림)
             report_df["8월 1W 가동률(%)"] = report_df.apply(
                 lambda r: round(r["W1_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
             )
@@ -260,10 +260,9 @@ else:
                 lambda r: round(r["W2_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
             )
             
-            # 🔥 [수정] 2주차까지 지난 누적 기준공수: 10영업일 * 8h * MM = 80.0h * MM
-            # (월말 전체 19일이 아니라, 현재 집계 기간인 10일 기준으로 계산하여 정확한 누적 가동률 도출)
+            # 2주차(10영업일) 누적 기준공수: 10일 * 8h * MM = 80.0h * MM
             report_df["월간기준공수(h)"] = (10.0 * 8.0 * report_df["MM"]).round(1)
-            report_df["월 가동률(%)"] = report_df.apply(
+            report_df["월 누적 가동률(%)"] = report_df.apply(
                 lambda r: round(r["Month_총실공수"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
             )
 
@@ -278,12 +277,12 @@ else:
                 else:
                     return "초과"
 
-            # 최신 주차(2W) 기준 상태 판단
-            report_df["판단"] = report_df.apply(lambda r: get_status(r["8월 2W 가동률(%)"], r["MM"]), axis=1)
+            # 🔥 [수정] 판단을 '월 누적 가동률(%)' 기준으로 적용
+            report_df["판단"] = report_df.apply(lambda r: get_status(r["월 누적 가동률(%)"], r["MM"]), axis=1)
 
-            # 출력용 테이블
+            # 출력용 테이블 정리
             display_df = report_df[[
-                "Role", "MM", "월 가동률(%)", "8월 1W 가동률(%)", "8월 2W 가동률(%)", 
+                "Role", "MM", "월 누적 가동률(%)", "8월 1W 가동률(%)", "8월 2W 가동률(%)", 
                 "판단", "Month_총실공수", "월간기준공수(h)"
             ]].copy()
             display_df.columns = [
@@ -305,7 +304,7 @@ else:
                 "월 누적 가동률(%)": total_month_rate,
                 "8월 1W 가동률(%)": total_w1_rate,
                 "8월 2W 가동률(%)": total_w2_rate,
-                "판단": get_status(total_w2_rate, total_mm),
+                "판단": get_status(total_month_rate, total_mm),
                 "월간 누적 실공수(h)": round(total_actual, 1),
                 "월간 누적 기준공수(h)": round(total_std, 1)
             }])
