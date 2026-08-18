@@ -17,7 +17,7 @@ def init_supabase():
 
 supabase = init_supabase()
 
-# 16개 직군 목록
+# 16개 기준 직군 목록
 ROLE_LIST = [
     "운영 총괄PM",
     "거버넌스",
@@ -159,7 +159,7 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (판단 및 정수 반올림 적용)
+    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (휴가 가산 포함)
     # =========================================================
     elif menu == "3. 엑셀 업로드 및 위클리 리포트 생성":
         st.title("📈 위클리 근무 공수 & 가동률 리포트")
@@ -172,7 +172,6 @@ else:
 
             st.success(f"'{sheet_target}' 시트 데이터를 성공적으로 불러왔습니다.")
 
-            # 이름 정규화
             def clean_name(val):
                 s = str(val).strip()
                 match = re.match(r"^([가-힣a-zA-Z0-9]+)", s)
@@ -181,7 +180,7 @@ else:
             user_col = "User" if "User" in df_raw.columns else df_raw.columns[0]
             df_raw["User_clean"] = df_raw[user_col].apply(clean_name)
 
-            # DB에서 직군별 MM 집계
+            # DB에서 인력 및 직군별 MM 집계
             db_members = supabase.table("members").select("*").execute().data
 
             if db_members:
@@ -192,7 +191,7 @@ else:
             else:
                 mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
 
-            # 사용자별 직군 매핑
+            # 사용자별 직군 매칭
             def match_role_from_db(cleaned_user):
                 for m in db_members:
                     db_n = clean_name(m["name"])
@@ -205,53 +204,76 @@ else:
             else:
                 df_raw["Role"] = None
 
-            # DB 매핑 누락분 백업 매핑
             if (df_raw["Role"].isnull().any() or not db_members) and "인력 기준 및 양식" in excel_file.sheet_names:
                 df_info_sheet = pd.read_excel(uploaded_file, sheet_name="인력 기준 및 양식")
                 backup_map = df_info_sheet.iloc[1:28, [0, 1]].dropna()
                 backup_dict = {clean_name(u): str(r).strip() for u, r in zip(backup_map.iloc[:, 0], backup_map.iloc[:, 1])}
                 df_raw["Role"] = df_raw["Role"].fillna(df_raw["User_clean"].map(backup_dict))
 
-            # 주차별/월간 시간 데이터 추출
+            # 엑셀 근무시간 추출
             date_cols = [c for c in df_raw.columns if any(m in str(c) for m in ["Aug", "8월", "Mon", "Tue", "Wed", "Thu", "Fri"]) and c not in ["Total (h)", "8월 1W", "8월 2W"]]
             w1_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["03 Aug", "04 Aug", "05 Aug", "06 Aug", "07 Aug"])]
             w2_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["10 Aug", "11 Aug", "12 Aug", "13 Aug", "14 Aug"])]
 
-            if "8월 1W" in df_raw.columns:
-                df_raw["W1_hours"] = pd.to_numeric(df_raw["8월 1W"], errors="coerce").fillna(0)
-            else:
-                df_raw["W1_hours"] = df_raw[w1_cols].sum(axis=1) if w1_cols else 0.0
+            df_raw["W1_hours"] = pd.to_numeric(df_raw["8월 1W"], errors="coerce").fillna(0) if "8월 1W" in df_raw.columns else df_raw[w1_cols].sum(axis=1)
+            df_raw["W2_hours"] = pd.to_numeric(df_raw["8월 2W"], errors="coerce").fillna(0) if "8월 2W" in df_raw.columns else df_raw[w2_cols].sum(axis=1)
+            df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0) if "Total (h)" in df_raw.columns else df_raw[date_cols].sum(axis=1)
 
-            if "8월 2W" in df_raw.columns:
-                df_raw["W2_hours"] = pd.to_numeric(df_raw["8월 2W"], errors="coerce").fillna(0)
-            else:
-                df_raw["W2_hours"] = df_raw[w2_cols].sum(axis=1) if w2_cols else 0.0
+            # =========================================================
+            # 🔥 DB Vacation(휴가/반차) 데이터 가져와서 실공수에 가산(+)
+            # =========================================================
+            vac_data = supabase.table("vacations").select("*").execute().data
+            vac_w1_map = {}
+            vac_w2_map = {}
+            vac_month_map = {}
 
-            if "Total (h)" in df_raw.columns:
-                df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0)
-            else:
-                df_raw["Month_hours"] = df_raw[date_cols].sum(axis=1)
+            if vac_data:
+                for v in vac_data:
+                    v_user_clean = clean_name(v["name"])
+                    h = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
+                    v_dt = str(v.get("v_date", ""))
 
-            # 직군별 합산
-            role_sum = df_raw.groupby("Role")[["Month_hours", "W1_hours", "W2_hours"]].sum().reset_index()
+                    # 8월 전체 합산
+                    if "-08-" in v_dt or "2026-08" in v_dt:
+                        vac_month_map[v_user_clean] = vac_month_map.get(v_user_clean, 0.0) + h
+
+                    # 1W 주차 (8월 3일 ~ 8월 7일)
+                    if any(d in v_dt for d in ["-08-03", "-08-04", "-08-05", "-08-06", "-08-07"]):
+                        vac_w1_map[v_user_clean] = vac_w1_map.get(v_user_clean, 0.0) + h
+
+                    # 2W 주차 (8월 10일 ~ 8월 14일)
+                    if any(d in v_dt for d in ["-08-10", "-08-11", "-08-12", "-08-13", "-08-14"]):
+                        vac_w2_map[v_user_clean] = vac_w2_map.get(v_user_clean, 0.0) + h
+
+            # 각 사용자별 휴가시간 가산
+            df_raw["Vac_W1"] = df_raw["User_clean"].map(vac_w1_map).fillna(0.0)
+            df_raw["Vac_W2"] = df_raw["User_clean"].map(vac_w2_map).fillna(0.0)
+            df_raw["Vac_Month"] = df_raw["User_clean"].map(vac_month_map).fillna(0.0)
+
+            # 순수 근무시간 + 휴가인정시간 = 최종 실공수
+            df_raw["W1_총실공수"] = df_raw["W1_hours"] + df_raw["Vac_W1"]
+            df_raw["W2_총실공수"] = df_raw["W2_hours"] + df_raw["Vac_W2"]
+            df_raw["Month_총실공수"] = df_raw["Month_hours"] + df_raw["Vac_Month"]
+
+            # 직군별 실공수 집계
+            role_sum = df_raw.groupby("Role")[["Month_총실공수", "W1_총실공수", "W2_총실공수"]].sum().reset_index()
             report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
 
-            # 가동률 계산 (% 정수 반올림 처리: round 0)
+            # 가동률 계산 (정수 반올림)
             report_df["8월 1W 가동률(%)"] = report_df.apply(
-                lambda r: round(r["W1_hours"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
+                lambda r: round(r["W1_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
             )
             report_df["8월 2W 가동률(%)"] = report_df.apply(
-                lambda r: round(r["W2_hours"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
+                lambda r: round(r["W2_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
             )
             
             # 월 기준공수: 19일 * 8h * MM
             report_df["월간기준공수(h)"] = (19.0 * 8.0 * report_df["MM"]).round(1)
             report_df["월 가동률(%)"] = report_df.apply(
-                lambda r: round(r["Month_hours"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
+                lambda r: round(r["Month_총실공수"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
             )
 
             # 판단 규칙 (80% 미만: 여유 / 80%~120%: 적정 / 120% 초과: 초과)
-            # 위클리 리포트이므로 최신 주차(2W 가동률) 또는 해당 주차 기준 적용
             def get_status(rate, mm):
                 if mm == 0:
                     return "-"
@@ -262,13 +284,13 @@ else:
                 else:
                     return "초과"
 
-            # 최신 주차(8월 2W) 기준으로 판단 부여
+            # 최신 주차(2W) 기준 판단
             report_df["판단"] = report_df.apply(lambda r: get_status(r["8월 2W 가동률(%)"], r["MM"]), axis=1)
 
             # 출력용 테이블
             display_df = report_df[[
                 "Role", "MM", "월 가동률(%)", "8월 1W 가동률(%)", "8월 2W 가동률(%)", 
-                "판단", "Month_hours", "월간기준공수(h)"
+                "판단", "Month_총실공수", "월간기준공수(h)"
             ]].copy()
             display_df.columns = [
                 "구분", "MM", "월 가동률(%)", "8월 1W 가동률(%)", "8월 2W 가동률(%)", 
@@ -280,8 +302,8 @@ else:
             total_actual = display_df["월간 실공수(h)"].sum()
             total_std = display_df["월간 기준공수(h)"].sum()
             total_month_rate = round(total_actual / total_std * 100) if total_std > 0 else 0
-            total_w1_rate = round(report_df["W1_hours"].sum() / (8.0 * total_mm * 5.0) * 100) if total_mm > 0 else 0
-            total_w2_rate = round(report_df["W2_hours"].sum() / (8.0 * total_mm * 5.0) * 100) if total_mm > 0 else 0
+            total_w1_rate = round(report_df["W1_총실공수"].sum() / (8.0 * total_mm * 5.0) * 100) if total_mm > 0 else 0
+            total_w2_rate = round(report_df["W2_총실공수"].sum() / (8.0 * total_mm * 5.0) * 100) if total_mm > 0 else 0
 
             total_row = pd.DataFrame([{
                 "구분": "Total",
@@ -297,7 +319,7 @@ else:
             final_view = pd.concat([display_df, total_row], ignore_index=True)
 
             st.markdown("---")
-            st.subheader("📊 위클리 보고 리포트 (정수 반올림 & 주차별 판단 적용)")
+            st.subheader("📊 위클리 보고 리포트 (휴가 시간 합산 가동률)")
 
             def highlight_status(val):
                 if val == "여유":
