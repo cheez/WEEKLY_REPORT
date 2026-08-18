@@ -115,11 +115,10 @@ else:
             "4. 과거 보고서 저장 이력 조회"
         ])
     else:
-        # 일반 사용자는 보고서 조회만 가능
         menu = st.sidebar.selectbox("📌 메뉴 선택", ["4. 과거 보고서 저장 이력 조회"])
 
     # =========================================================
-    # 메뉴 1: 기본정보 관리 (관리자 전용 - DB 저장)
+    # 메뉴 1: 기본정보 관리 (관리자 전용)
     # =========================================================
     if menu == "1. 기본정보 관리 (인력/MM)":
         st.title("⚙️ 인력 기본 정보 & 직군별 MM 관리 (DB 영구 저장)")
@@ -379,7 +378,7 @@ else:
                 st.success(f"'{report_name}'가 DB에 성공적으로 저장되었습니다!")
 
     # =========================================================
-    # 메뉴 4: 과거 보고서 조회 (일반 사용자 & 관리자 공용)
+    # 메뉴 4: 과거 보고서 조회 (드롭다운에 명칭+날짜 표기 및 스타일링 적용)
     # =========================================================
     elif menu == "4. 과거 보고서 저장 이력 조회":
         st.title("📂 저장된 위클리 보고서 이력 조회")
@@ -390,27 +389,34 @@ else:
             df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
             st.dataframe(df_r, use_container_width=True)
 
-            selected_id = st.selectbox("상세 조회할 보고서 ID 선택", df_r["ID"])
+            # 🔥 [수정] 보고서 ID + 보고서 명칭 + 일시를 묶어서 선택 옵션 구성
+            report_options = {
+                f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
+                for r in reports_data
+            }
+
+            selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
+            selected_id = report_options[selected_label]
+
             if st.button("보고서 불러오기"):
                 detail = supabase.table("reports").select("*").eq("id", selected_id).execute().data[0]
                 st.subheader(f"📄 {detail['report_title']} 상세 내용")
                 
                 df_detail = pd.DataFrame(detail["excel_data"])
 
-                # 컬럼 순서 보장
+                # 컬럼 순서 완벽 고정
                 expected_cols = ["구분", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "월간 누적 실공수(h)"]
                 actual_cols = [c for c in expected_cols if c in df_detail.columns]
-                # 누락된 나머지 컬럼이 있다면 뒤에 추가
                 actual_cols += [c for c in df_detail.columns if c not in actual_cols]
                 df_detail = df_detail[actual_cols]
 
-                # 숫자형 변환 후 포맷 및 색상 적용
+                # 숫자형 변환 및 포맷
                 if "MM" in df_detail.columns:
                     df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
                 if "월간 누적 실공수(h)" in df_detail.columns:
                     df_detail["월간 누적 실공수(h)"] = pd.to_numeric(df_detail["월간 누적 실공수(h)"], errors="coerce").fillna(0.0)
 
-                # 스타일링 적용 (색상 강조 및 정렬)
+                # 스타일 및 색상 적용
                 st_view = df_detail.style
                 if "판단" in df_detail.columns:
                     st_view = st_view.map(highlight_status, subset=["판단"])
