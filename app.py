@@ -130,8 +130,8 @@ else:
                     st.rerun()
 
             st.subheader("📜 등록된 휴가 내역")
-            v_data = supabase.table("vacations").select("*").order("v_date", ascending=False).execute().data
-            if v_data:
+           reports_data = supabase.table("reports").select("...").order("created_at", desc=True).execute().data
+                if v_data:
                 df_v = pd.DataFrame(v_data)[["id", "name", "v_date", "v_type", "reason"]]
                 df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
                 st.dataframe(df_v, use_container_width=True)
