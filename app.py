@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 import json
 import re
 
@@ -62,6 +62,15 @@ def count_working_days(start_dt, end_dt):
         cur += timedelta(days=1)
     return w_days
 
+def highlight_status(val):
+    if val == "여유":
+        return "background-color: #D9E1F2; color: #1F4E78; font-weight: bold;"
+    elif val == "적정":
+        return "background-color: #E2EFDA; color: #375623; font-weight: bold;"
+    elif val == "초과":
+        return "background-color: #FCE4D6; color: #C65911; font-weight: bold;"
+    return ""
+
 st.set_page_config(page_title="위클리 가동률 & MM 리포트 시스템", layout="wide")
 
 # ---------------------------------------------------------
@@ -73,14 +82,14 @@ if "user_role" not in st.session_state:
 st.sidebar.title("🔒 시스템 로그인")
 
 if st.session_state.user_role is None:
-    role_choice = st.sidebar.radio("접속 권한 선택", ["일반 사용자 (보고서 조회/생성)", "관리자 (기본정보 관리)"])
+    role_choice = st.sidebar.radio("접속 권한 선택", ["일반 사용자 (보고서 조회 전용)", "관리자 (기본정보/보고서 생성)"])
     password_input = st.sidebar.text_input("비밀번호 입력", type="password")
     
     if st.sidebar.button("로그인"):
-        if role_choice == "관리자 (기본정보 관리)" and password_input == "admin123":
+        if role_choice == "관리자 (기본정보/보고서 생성)" and password_input == "admin123":
             st.session_state.user_role = "admin"
             st.rerun()
-        elif role_choice == "일반 사용자 (보고서 조회/생성)" and password_input == "user123":
+        elif role_choice == "일반 사용자 (보고서 조회 전용)" and password_input == "user123":
             st.session_state.user_role = "user"
             st.rerun()
         else:
@@ -106,10 +115,8 @@ else:
             "4. 과거 보고서 저장 이력 조회"
         ])
     else:
-        menu = st.sidebar.selectbox("📌 메뉴 선택", [
-            "3. 엑셀 업로드 및 위클리 리포트 생성", 
-            "4. 과거 보고서 저장 이력 조회"
-        ])
+        # 일반 사용자는 보고서 조회만 가능
+        menu = st.sidebar.selectbox("📌 메뉴 선택", ["4. 과거 보고서 저장 이력 조회"])
 
     # =========================================================
     # 메뉴 1: 기본정보 관리 (관리자 전용 - DB 저장)
@@ -184,10 +191,10 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (양식 완벽 구현)
+    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (관리자 전용)
     # =========================================================
     elif menu == "3. 엑셀 업로드 및 위클리 리포트 생성":
-        st.title("📈 위클리 근무 공수 & 가동률 리포트")
+        st.title("📈 위클리 근무 공수 & 가동률 리포트 생성")
         uploaded_file = st.file_uploader("근무시간 엑셀 파일(raw_report.xlsx) 업로드", type=["xlsx", "xls"])
 
         if uploaded_file is not None:
@@ -205,7 +212,6 @@ else:
             user_col = "User" if "User" in df_raw.columns else df_raw.columns[0]
             df_raw["User_clean"] = df_raw[user_col].apply(clean_name)
 
-            # DB에서 직군별 MM 집계
             db_members = supabase.table("members").select("*").execute().data
 
             if db_members:
@@ -216,7 +222,6 @@ else:
             else:
                 mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
 
-            # 사용자별 직군 매칭
             def match_role_from_db(cleaned_user):
                 for m in db_members:
                     db_n = clean_name(m["name"])
@@ -235,7 +240,6 @@ else:
                 backup_dict = {clean_name(u): str(r).strip() for u, r in zip(backup_map.iloc[:, 0], backup_map.iloc[:, 1])}
                 df_raw["Role"] = df_raw["Role"].fillna(df_raw["User_clean"].map(backup_dict))
 
-            # 엑셀 주차별 컬럼 추출
             date_cols = [c for c in df_raw.columns if any(m in str(c) for m in ["Aug", "8월", "Mon", "Tue", "Wed", "Thu", "Fri"]) and c not in ["Total (h)", "8월 1W", "8월 2W"]]
             w1_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["03 Aug", "04 Aug", "05 Aug", "06 Aug", "07 Aug"])]
             w2_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["10 Aug", "11 Aug", "12 Aug", "13 Aug", "14 Aug"])]
@@ -248,7 +252,6 @@ else:
             df_raw["W4_hours"] = df_raw[w4_cols].sum(axis=1) if w4_cols else 0.0
             df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0) if "Total (h)" in df_raw.columns else df_raw[date_cols].sum(axis=1)
 
-            # DB Vacation(휴가/반차) 합산
             vac_data = supabase.table("vacations").select("*").execute().data
             vac_w1_map, vac_w2_map, vac_w3_map, vac_w4_map, vac_month_map = {}, {}, {}, {}, {}
 
@@ -281,22 +284,16 @@ else:
             df_raw["W4_총실공수"] = df_raw["W4_hours"] + df_raw["Vac_W4"]
             df_raw["Month_총실공수"] = df_raw["Month_hours"] + df_raw["Vac_Month"]
 
-            # 직군별 실공수 집계
             role_sum = df_raw.groupby("Role")[["Month_총실공수", "W1_총실공수", "W2_총실공수", "W3_총실공수", "W4_총실공수"]].sum().reset_index()
             report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
 
-            # 주차별 실제 워킹데이(공휴일 반영) 기준 시간 계산
-            # 1W (8/3~8/7): 5일, 2W (8/10~8/14): 5일
-            # 3W (8/17~8/21): 4일 (8/17 대체공휴일), 4W (8/24~8/28): 5일
             w1_days = count_working_days(date(2026, 8, 3), date(2026, 8, 7))   # 5
             w2_days = count_working_days(date(2026, 8, 10), date(2026, 8, 14)) # 5
             w3_days = count_working_days(date(2026, 8, 17), date(2026, 8, 21)) # 4
             w4_days = count_working_days(date(2026, 8, 24), date(2026, 8, 28)) # 5
 
-            # 2주차 마감 기준 누적 워킹데이: 10일
             elapsed_days = w1_days + w2_days  # 10일
 
-            # 주차별 가동률 (%)
             report_df["8월 1W"] = report_df.apply(
                 lambda r: f"{round(r['W1_총실공수'] / (8.0 * r['MM'] * w1_days) * 100)}%" if r["MM"] > 0 else "-", axis=1
             )
@@ -310,7 +307,6 @@ else:
                 lambda r: f"{round(r['W4_총실공수'] / (8.0 * r['MM'] * w4_days) * 100)}%" if (r["MM"] > 0 and r['W4_총실공수'] > 0) else "", axis=1
             )
             
-            # 🔥 2주차 마감 기준 월 누적 가동률: (누적 실공수 / (8h * MM * 10일))
             report_df["월간기준공수(h)"] = (elapsed_days * 8.0 * report_df["MM"]).round(1)
             report_df["8월_num"] = report_df.apply(
                 lambda r: round(r["Month_총실공수"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
@@ -319,7 +315,6 @@ else:
                 lambda r: f"{int(r['8월_num'])}%" if r["MM"] > 0 else "-", axis=1
             )
 
-            # 판단 규칙 (80% 미만: 여유 / 80%~120%: 적정 / 120% 초과: 초과)
             def get_status(rate_num, mm):
                 if mm == 0:
                     return "-"
@@ -332,7 +327,6 @@ else:
 
             report_df["판단"] = report_df.apply(lambda r: get_status(r["8월_num"], r["MM"]), axis=1)
 
-            # 엑셀 보고 양식과 동일한 컬럼 구조 생성
             display_df = report_df[[
                 "Role", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "Month_총실공수"
             ]].copy()
@@ -340,7 +334,6 @@ else:
                 "구분", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "월간 누적 실공수(h)"
             ]
 
-            # Total 합계 행
             total_mm = display_df["MM"].sum()
             total_actual = display_df["월간 누적 실공수(h)"].sum()
             total_std = report_df["월간기준공수(h)"].sum()
@@ -365,15 +358,6 @@ else:
             st.markdown("---")
             st.subheader("📊 위클리 보고 리포트")
 
-            def highlight_status(val):
-                if val == "여유":
-                    return "background-color: #D9E1F2; color: #1F4E78; font-weight: bold;"
-                elif val == "적정":
-                    return "background-color: #E2EFDA; color: #375623; font-weight: bold;"
-                elif val == "초과":
-                    return "background-color: #FCE4D6; color: #C65911; font-weight: bold;"
-                return ""
-
             st.dataframe(
                 final_view.style.map(highlight_status, subset=["판단"]).format({
                     "MM": "{:.2f}",
@@ -383,8 +367,6 @@ else:
                 height=680
             )
 
-            # 리포트 DB 저장
-            st.markdown("---")
             report_name = st.text_input("보고서 저장 명칭", value="2026년 8월 2주차 위클리 보고서")
             if st.button("💾 이 위클리 보고서 DB에 저장하기"):
                 json_data = final_view.to_json(orient="records", force_ascii=False)
@@ -397,10 +379,10 @@ else:
                 st.success(f"'{report_name}'가 DB에 성공적으로 저장되었습니다!")
 
     # =========================================================
-    # 메뉴 4: 과거 보고서 조회
+    # 메뉴 4: 과거 보고서 조회 (일반 사용자 & 관리자 공용)
     # =========================================================
     elif menu == "4. 과거 보고서 저장 이력 조회":
-        st.title("📂 저장된 위클리 보고서 이력")
+        st.title("📂 저장된 위클리 보고서 이력 조회")
         reports_data = supabase.table("reports").select("id, report_title, total_mm, total_hours, created_at").order("created_at", desc=True).execute().data
 
         if reports_data:
@@ -412,6 +394,36 @@ else:
             if st.button("보고서 불러오기"):
                 detail = supabase.table("reports").select("*").eq("id", selected_id).execute().data[0]
                 st.subheader(f"📄 {detail['report_title']} 상세 내용")
-                st.dataframe(pd.DataFrame(detail["excel_data"]), use_container_width=True, height=680)
+                
+                df_detail = pd.DataFrame(detail["excel_data"])
+
+                # 컬럼 순서 보장
+                expected_cols = ["구분", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "월간 누적 실공수(h)"]
+                actual_cols = [c for c in expected_cols if c in df_detail.columns]
+                # 누락된 나머지 컬럼이 있다면 뒤에 추가
+                actual_cols += [c for c in df_detail.columns if c not in actual_cols]
+                df_detail = df_detail[actual_cols]
+
+                # 숫자형 변환 후 포맷 및 색상 적용
+                if "MM" in df_detail.columns:
+                    df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
+                if "월간 누적 실공수(h)" in df_detail.columns:
+                    df_detail["월간 누적 실공수(h)"] = pd.to_numeric(df_detail["월간 누적 실공수(h)"], errors="coerce").fillna(0.0)
+
+                # 스타일링 적용 (색상 강조 및 정렬)
+                st_view = df_detail.style
+                if "판단" in df_detail.columns:
+                    st_view = st_view.map(highlight_status, subset=["판단"])
+                
+                format_dict = {}
+                if "MM" in df_detail.columns:
+                    format_dict["MM"] = "{:.2f}"
+                if "월간 누적 실공수(h)" in df_detail.columns:
+                    format_dict["월간 누적 실공수(h)"] = "{:,.1f}h"
+                
+                if format_dict:
+                    st_view = st_view.format(format_dict)
+
+                st.dataframe(st_view, use_container_width=True, height=680)
         else:
             st.info("저장된 보고서가 없습니다.")
