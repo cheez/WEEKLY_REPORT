@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import date
+from datetime import date, datetime, timedelta
 import json
 import re
 
@@ -36,6 +36,31 @@ ROLE_LIST = [
     "UXUI+QA",
     "AMC"
 ]
+
+# 한국 법정 공휴일 (대체공휴일 포함)
+HOLIDAYS_KR = {
+    "2026-01-01": "신정",
+    "2026-02-16": "설날 연휴", "2026-02-17": "설날", "2026-02-18": "설날 연휴",
+    "2026-03-01": "삼일절", "2026-03-02": "대체공휴일",
+    "2026-05-05": "어린이날", "2026-05-24": "부처님오신날", "2026-05-25": "대체공휴일",
+    "2026-06-06": "현충일",
+    "2026-08-15": "광복절", "2026-08-17": "대체공휴일",
+    "2026-09-24": "추석 연휴", "2026-09-25": "추석", "2026-09-26": "추석 연휴",
+    "2026-10-03": "개천절", "2026-10-05": "대체공휴일",
+    "2026-10-09": "한글날",
+    "2026-12-25": "기독탄신일"
+}
+
+def count_working_days(start_dt, end_dt):
+    """평일(월~금) 중 법정 공휴일을 제외한 실제 워킹데이 계산"""
+    cur = start_dt
+    w_days = 0
+    while cur <= end_dt:
+        d_str = cur.strftime("%Y-%m-%d")
+        if cur.weekday() < 5 and d_str not in HOLIDAYS_KR:
+            w_days += 1
+        cur += timedelta(days=1)
+    return w_days
 
 st.set_page_config(page_title="위클리 가동률 & MM 리포트 시스템", layout="wide")
 
@@ -159,7 +184,7 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (월 누적 기준 판단 적용)
+    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (양식 완벽 구현)
     # =========================================================
     elif menu == "3. 엑셀 업로드 및 위클리 리포트 생성":
         st.title("📈 위클리 근무 공수 & 가동률 리포트")
@@ -180,7 +205,7 @@ else:
             user_col = "User" if "User" in df_raw.columns else df_raw.columns[0]
             df_raw["User_clean"] = df_raw[user_col].apply(clean_name)
 
-            # DB에서 인력 및 직군별 MM 집계
+            # DB에서 직군별 MM 집계
             db_members = supabase.table("members").select("*").execute().data
 
             if db_members:
@@ -210,20 +235,22 @@ else:
                 backup_dict = {clean_name(u): str(r).strip() for u, r in zip(backup_map.iloc[:, 0], backup_map.iloc[:, 1])}
                 df_raw["Role"] = df_raw["Role"].fillna(df_raw["User_clean"].map(backup_dict))
 
-            # 엑셀 근무시간 추출
+            # 엑셀 주차별 컬럼 추출
             date_cols = [c for c in df_raw.columns if any(m in str(c) for m in ["Aug", "8월", "Mon", "Tue", "Wed", "Thu", "Fri"]) and c not in ["Total (h)", "8월 1W", "8월 2W"]]
             w1_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["03 Aug", "04 Aug", "05 Aug", "06 Aug", "07 Aug"])]
             w2_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["10 Aug", "11 Aug", "12 Aug", "13 Aug", "14 Aug"])]
+            w3_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["17 Aug", "18 Aug", "19 Aug", "20 Aug", "21 Aug"])]
+            w4_cols = [c for c in df_raw.columns if any(k in str(c) for k in ["24 Aug", "25 Aug", "26 Aug", "27 Aug", "28 Aug"])]
 
             df_raw["W1_hours"] = pd.to_numeric(df_raw["8월 1W"], errors="coerce").fillna(0) if "8월 1W" in df_raw.columns else df_raw[w1_cols].sum(axis=1)
             df_raw["W2_hours"] = pd.to_numeric(df_raw["8월 2W"], errors="coerce").fillna(0) if "8월 2W" in df_raw.columns else df_raw[w2_cols].sum(axis=1)
+            df_raw["W3_hours"] = df_raw[w3_cols].sum(axis=1) if w3_cols else 0.0
+            df_raw["W4_hours"] = df_raw[w4_cols].sum(axis=1) if w4_cols else 0.0
             df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0) if "Total (h)" in df_raw.columns else df_raw[date_cols].sum(axis=1)
 
             # DB Vacation(휴가/반차) 합산
             vac_data = supabase.table("vacations").select("*").execute().data
-            vac_w1_map = {}
-            vac_w2_map = {}
-            vac_month_map = {}
+            vac_w1_map, vac_w2_map, vac_w3_map, vac_w4_map, vac_month_map = {}, {}, {}, {}, {}
 
             if vac_data:
                 for v in vac_data:
@@ -233,80 +260,104 @@ else:
 
                     if "-08-" in v_dt or "2026-08" in v_dt:
                         vac_month_map[v_user_clean] = vac_month_map.get(v_user_clean, 0.0) + h
-
                     if any(d in v_dt for d in ["-08-03", "-08-04", "-08-05", "-08-06", "-08-07"]):
                         vac_w1_map[v_user_clean] = vac_w1_map.get(v_user_clean, 0.0) + h
-
                     if any(d in v_dt for d in ["-08-10", "-08-11", "-08-12", "-08-13", "-08-14"]):
                         vac_w2_map[v_user_clean] = vac_w2_map.get(v_user_clean, 0.0) + h
+                    if any(d in v_dt for d in ["-08-17", "-08-18", "-08-19", "-08-20", "-08-21"]):
+                        vac_w3_map[v_user_clean] = vac_w3_map.get(v_user_clean, 0.0) + h
+                    if any(d in v_dt for d in ["-08-24", "-08-25", "-08-26", "-08-27", "-08-28"]):
+                        vac_w4_map[v_user_clean] = vac_w4_map.get(v_user_clean, 0.0) + h
 
             df_raw["Vac_W1"] = df_raw["User_clean"].map(vac_w1_map).fillna(0.0)
             df_raw["Vac_W2"] = df_raw["User_clean"].map(vac_w2_map).fillna(0.0)
+            df_raw["Vac_W3"] = df_raw["User_clean"].map(vac_w3_map).fillna(0.0)
+            df_raw["Vac_W4"] = df_raw["User_clean"].map(vac_w4_map).fillna(0.0)
             df_raw["Vac_Month"] = df_raw["User_clean"].map(vac_month_map).fillna(0.0)
 
             df_raw["W1_총실공수"] = df_raw["W1_hours"] + df_raw["Vac_W1"]
             df_raw["W2_총실공수"] = df_raw["W2_hours"] + df_raw["Vac_W2"]
+            df_raw["W3_총실공수"] = df_raw["W3_hours"] + df_raw["Vac_W3"]
+            df_raw["W4_총실공수"] = df_raw["W4_hours"] + df_raw["Vac_W4"]
             df_raw["Month_총실공수"] = df_raw["Month_hours"] + df_raw["Vac_Month"]
 
             # 직군별 실공수 집계
-            role_sum = df_raw.groupby("Role")[["Month_총실공수", "W1_총실공수", "W2_총실공수"]].sum().reset_index()
+            role_sum = df_raw.groupby("Role")[["Month_총실공수", "W1_총실공수", "W2_총실공수", "W3_총실공수", "W4_총실공수"]].sum().reset_index()
             report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
 
-            # 주차별 가동률 계산 (정수 반올림)
-            report_df["8월 1W 가동률(%)"] = report_df.apply(
-                lambda r: round(r["W1_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
+            # 주차별 실제 워킹데이(공휴일 반영) 기준 시간 계산
+            # 1W (8/3~8/7): 5일, 2W (8/10~8/14): 5일
+            # 3W (8/17~8/21): 4일 (8/17 대체공휴일), 4W (8/24~8/28): 5일
+            w1_days = count_working_days(date(2026, 8, 3), date(2026, 8, 7))   # 5
+            w2_days = count_working_days(date(2026, 8, 10), date(2026, 8, 14)) # 5
+            w3_days = count_working_days(date(2026, 8, 17), date(2026, 8, 21)) # 4
+            w4_days = count_working_days(date(2026, 8, 24), date(2026, 8, 28)) # 5
+
+            # 2주차 마감 기준 누적 워킹데이: 10일
+            elapsed_days = w1_days + w2_days  # 10일
+
+            # 주차별 가동률 (%)
+            report_df["8월 1W"] = report_df.apply(
+                lambda r: f"{round(r['W1_총실공수'] / (8.0 * r['MM'] * w1_days) * 100)}%" if r["MM"] > 0 else "-", axis=1
             )
-            report_df["8월 2W 가동률(%)"] = report_df.apply(
-                lambda r: round(r["W2_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
+            report_df["8월 2W"] = report_df.apply(
+                lambda r: f"{round(r['W2_총실공수'] / (8.0 * r['MM'] * w2_days) * 100)}%" if r["MM"] > 0 else "-", axis=1
+            )
+            report_df["8월 3W"] = report_df.apply(
+                lambda r: f"{round(r['W3_총실공수'] / (8.0 * r['MM'] * w3_days) * 100)}%" if (r["MM"] > 0 and r['W3_총실공수'] > 0) else "", axis=1
+            )
+            report_df["8월 4W"] = report_df.apply(
+                lambda r: f"{round(r['W4_총실공수'] / (8.0 * r['MM'] * w4_days) * 100)}%" if (r["MM"] > 0 and r['W4_총실공수'] > 0) else "", axis=1
             )
             
-            # 2주차(10영업일) 누적 기준공수: 10일 * 8h * MM = 80.0h * MM
-            report_df["월간기준공수(h)"] = (10.0 * 8.0 * report_df["MM"]).round(1)
-            report_df["월 누적 가동률(%)"] = report_df.apply(
+            # 🔥 2주차 마감 기준 월 누적 가동률: (누적 실공수 / (8h * MM * 10일))
+            report_df["월간기준공수(h)"] = (elapsed_days * 8.0 * report_df["MM"]).round(1)
+            report_df["8월_num"] = report_df.apply(
                 lambda r: round(r["Month_총실공수"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
+            )
+            report_df["8월"] = report_df.apply(
+                lambda r: f"{int(r['8월_num'])}%" if r["MM"] > 0 else "-", axis=1
             )
 
             # 판단 규칙 (80% 미만: 여유 / 80%~120%: 적정 / 120% 초과: 초과)
-            def get_status(rate, mm):
+            def get_status(rate_num, mm):
                 if mm == 0:
                     return "-"
-                if rate < 80:
+                if rate_num < 80:
                     return "여유"
-                elif rate <= 120:
+                elif rate_num <= 120:
                     return "적정"
                 else:
                     return "초과"
 
-            # 🔥 [수정] 판단을 '월 누적 가동률(%)' 기준으로 적용
-            report_df["판단"] = report_df.apply(lambda r: get_status(r["월 누적 가동률(%)"], r["MM"]), axis=1)
+            report_df["판단"] = report_df.apply(lambda r: get_status(r["8월_num"], r["MM"]), axis=1)
 
-            # 출력용 테이블 정리
+            # 엑셀 보고 양식과 동일한 컬럼 구조 생성
             display_df = report_df[[
-                "Role", "MM", "월 누적 가동률(%)", "8월 1W 가동률(%)", "8월 2W 가동률(%)", 
-                "판단", "Month_총실공수", "월간기준공수(h)"
+                "Role", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "Month_총실공수"
             ]].copy()
             display_df.columns = [
-                "구분", "MM", "월 누적 가동률(%)", "8월 1W 가동률(%)", "8월 2W 가동률(%)", 
-                "판단", "월간 누적 실공수(h)", "월간 누적 기준공수(h)"
+                "구분", "MM", "8월", "8월 1W", "8월 2W", "8월 3W", "8월 4W", "판단", "월간 누적 실공수(h)"
             ]
 
             # Total 합계 행
             total_mm = display_df["MM"].sum()
             total_actual = display_df["월간 누적 실공수(h)"].sum()
-            total_std = display_df["월간 누적 기준공수(h)"].sum()
+            total_std = report_df["월간기준공수(h)"].sum()
             total_month_rate = round(total_actual / total_std * 100) if total_std > 0 else 0
-            total_w1_rate = round(report_df["W1_총실공수"].sum() / (8.0 * total_mm * 5.0) * 100) if total_mm > 0 else 0
-            total_w2_rate = round(report_df["W2_총실공수"].sum() / (8.0 * total_mm * 5.0) * 100) if total_mm > 0 else 0
+            total_w1_rate = round(report_df["W1_총실공수"].sum() / (8.0 * total_mm * w1_days) * 100) if total_mm > 0 else 0
+            total_w2_rate = round(report_df["W2_총실공수"].sum() / (8.0 * total_mm * w2_days) * 100) if total_mm > 0 else 0
 
             total_row = pd.DataFrame([{
                 "구분": "Total",
                 "MM": total_mm,
-                "월 누적 가동률(%)": total_month_rate,
-                "8월 1W 가동률(%)": total_w1_rate,
-                "8월 2W 가동률(%)": total_w2_rate,
+                "8월": f"{total_month_rate}%",
+                "8월 1W": f"{total_w1_rate}%",
+                "8월 2W": f"{total_w2_rate}%",
+                "8월 3W": "",
+                "8월 4W": "",
                 "판단": get_status(total_month_rate, total_mm),
-                "월간 누적 실공수(h)": round(total_actual, 1),
-                "월간 누적 기준공수(h)": round(total_std, 1)
+                "월간 누적 실공수(h)": round(total_actual, 1)
             }])
 
             final_view = pd.concat([display_df, total_row], ignore_index=True)
@@ -326,11 +377,7 @@ else:
             st.dataframe(
                 final_view.style.map(highlight_status, subset=["판단"]).format({
                     "MM": "{:.2f}",
-                    "월 누적 가동률(%)": "{:d}%",
-                    "8월 1W 가동률(%)": "{:d}%",
-                    "8월 2W 가동률(%)": "{:d}%",
-                    "월간 누적 실공수(h)": "{:,.1f}h",
-                    "월간 누적 기준공수(h)": "{:,.1f}h"
+                    "월간 누적 실공수(h)": "{:,.1f}h"
                 }),
                 use_container_width=True,
                 height=680
