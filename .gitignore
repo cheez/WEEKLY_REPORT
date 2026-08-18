@@ -1,0 +1,13 @@
+# Streamlit secrets — 절대 커밋 금지
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 로컬 환경파일
+.env
+*.local
