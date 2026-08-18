@@ -159,7 +159,7 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (휴가 가산 포함)
+    # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성 (높이 680px, 그래프 제거)
     # =========================================================
     elif menu == "3. 엑셀 업로드 및 위클리 리포트 생성":
         st.title("📈 위클리 근무 공수 & 가동률 리포트")
@@ -219,9 +219,7 @@ else:
             df_raw["W2_hours"] = pd.to_numeric(df_raw["8월 2W"], errors="coerce").fillna(0) if "8월 2W" in df_raw.columns else df_raw[w2_cols].sum(axis=1)
             df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0) if "Total (h)" in df_raw.columns else df_raw[date_cols].sum(axis=1)
 
-            # =========================================================
-            # 🔥 DB Vacation(휴가/반차) 데이터 가져와서 실공수에 가산(+)
-            # =========================================================
+            # DB Vacation(휴가/반차) 합산
             vac_data = supabase.table("vacations").select("*").execute().data
             vac_w1_map = {}
             vac_w2_map = {}
@@ -233,24 +231,19 @@ else:
                     h = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
                     v_dt = str(v.get("v_date", ""))
 
-                    # 8월 전체 합산
                     if "-08-" in v_dt or "2026-08" in v_dt:
                         vac_month_map[v_user_clean] = vac_month_map.get(v_user_clean, 0.0) + h
 
-                    # 1W 주차 (8월 3일 ~ 8월 7일)
                     if any(d in v_dt for d in ["-08-03", "-08-04", "-08-05", "-08-06", "-08-07"]):
                         vac_w1_map[v_user_clean] = vac_w1_map.get(v_user_clean, 0.0) + h
 
-                    # 2W 주차 (8월 10일 ~ 8월 14일)
                     if any(d in v_dt for d in ["-08-10", "-08-11", "-08-12", "-08-13", "-08-14"]):
                         vac_w2_map[v_user_clean] = vac_w2_map.get(v_user_clean, 0.0) + h
 
-            # 각 사용자별 휴가시간 가산
             df_raw["Vac_W1"] = df_raw["User_clean"].map(vac_w1_map).fillna(0.0)
             df_raw["Vac_W2"] = df_raw["User_clean"].map(vac_w2_map).fillna(0.0)
             df_raw["Vac_Month"] = df_raw["User_clean"].map(vac_month_map).fillna(0.0)
 
-            # 순수 근무시간 + 휴가인정시간 = 최종 실공수
             df_raw["W1_총실공수"] = df_raw["W1_hours"] + df_raw["Vac_W1"]
             df_raw["W2_총실공수"] = df_raw["W2_hours"] + df_raw["Vac_W2"]
             df_raw["Month_총실공수"] = df_raw["Month_hours"] + df_raw["Vac_Month"]
@@ -267,7 +260,6 @@ else:
                 lambda r: round(r["W2_총실공수"] / (8.0 * r["MM"] * 5.0) * 100) if r["MM"] > 0 else 0, axis=1
             )
             
-            # 월 기준공수: 19일 * 8h * MM
             report_df["월간기준공수(h)"] = (19.0 * 8.0 * report_df["MM"]).round(1)
             report_df["월 가동률(%)"] = report_df.apply(
                 lambda r: round(r["Month_총실공수"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
@@ -319,7 +311,7 @@ else:
             final_view = pd.concat([display_df, total_row], ignore_index=True)
 
             st.markdown("---")
-            st.subheader("📊 위클리 보고 리포트 (휴가 시간 합산 가동률)")
+            st.subheader("📊 위클리 보고 리포트")
 
             def highlight_status(val):
                 if val == "여유":
@@ -330,6 +322,7 @@ else:
                     return "background-color: #FCE4D6; color: #C65911; font-weight: bold;"
                 return ""
 
+            # height=680 지정으로 스크롤 없이 17행 전체 시원하게 표시
             st.dataframe(
                 final_view.style.map(highlight_status, subset=["판단"]).format({
                     "MM": "{:.2f}",
@@ -339,13 +332,9 @@ else:
                     "월간 실공수(h)": "{:,.1f}h",
                     "월간 기준공수(h)": "{:,.1f}h"
                 }),
-                use_container_width=True
+                use_container_width=True,
+                height=680
             )
-
-            # 직군별 차트
-            st.subheader("📈 직군별 8월 2W 가동률(%) 현황")
-            chart_df = display_df[display_df["구분"] != "Total"]
-            st.bar_chart(data=chart_df, x="구분", y="8월 2W 가동률(%)")
 
             # 리포트 DB 저장
             st.markdown("---")
@@ -376,6 +365,6 @@ else:
             if st.button("보고서 불러오기"):
                 detail = supabase.table("reports").select("*").eq("id", selected_id).execute().data[0]
                 st.subheader(f"📄 {detail['report_title']} 상세 내용")
-                st.dataframe(pd.DataFrame(detail["excel_data"]), use_container_width=True)
+                st.dataframe(pd.DataFrame(detail["excel_data"]), use_container_width=True, height=680)
         else:
             st.info("저장된 보고서가 없습니다.")
