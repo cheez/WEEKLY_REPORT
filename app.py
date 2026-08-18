@@ -39,7 +39,7 @@ def init_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase = init_supabase()
-
+st.sidebar.caption(f"KEY prefix: {SUPABASE_KEY[:11]}")
 
 def db_query(fn, default=None, err_label="DB 작업"):
     """Supabase 호출 공통 래퍼. 실패 시 사용자 안내 후 default 반환."""
