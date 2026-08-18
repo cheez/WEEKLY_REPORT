@@ -3,10 +3,9 @@ import pandas as pd
 from supabase import create_client
 from datetime import date
 import json
-import re
 
 # ---------------------------------------------------------
-# 1. Supabase 연결 설정
+# 1. Supabase 데이터베이스 연결 설정
 # ---------------------------------------------------------
 SUPABASE_URL = "https://fpwlptevwscomkbwcxxb.supabase.co"
 SUPABASE_KEY = "sb_publishable_7KeBb_WPYe3_Rhx1fOcgPQ_TKPCJbWW" 
@@ -107,10 +106,10 @@ else:
                 st.rerun()
 
     # =========================================================
-    # 메뉴 2: 휴가/반차 관리 (관리자 전용)
+    # 메뉴 2: 휴가/반차 수시 관리 (관리자 전용)
     # =========================================================
     elif menu == "2. 휴가/반차 수시 관리":
-        st.title("📅 휴가 / 반차 수시 관리")
+        st.title("📅 휴가 / 반차 수시 일정 관리")
         members_data = supabase.table("members").select("name").execute().data
         member_names = [m["name"] for m in members_data]
 
@@ -130,11 +129,20 @@ else:
                     st.rerun()
 
             st.subheader("📜 등록된 휴가 내역")
-           reports_data = supabase.table("reports").select("...").order("created_at", desc=True).execute().data
-                if v_data:
+            v_data = supabase.table("vacations").select("*").order("v_date", desc=True).execute().data
+            if v_data:
                 df_v = pd.DataFrame(v_data)[["id", "name", "v_date", "v_type", "reason"]]
                 df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
                 st.dataframe(df_v, use_container_width=True)
+
+                col_v1, col_v2 = st.columns([1, 4])
+                del_v_id = col_v1.number_input("삭제할 휴가 ID 입력", min_value=1, step=1)
+                if col_v2.button("휴가 삭제"):
+                    supabase.table("vacations").delete().eq("id", del_v_id).execute()
+                    st.success("휴가 내역이 삭제되었습니다.")
+                    st.rerun()
+        else:
+            st.warning("먼저 '1. 기본정보 관리'에서 팀원을 등록해 주세요.")
 
     # =========================================================
     # 메뉴 3: 엑셀 업로드 및 위클리 보고서 생성
@@ -145,26 +153,20 @@ else:
 
         if uploaded_file is not None:
             excel_file = pd.ExcelFile(uploaded_file)
-            
-            # 'Data' 시트 우선 로드, 없으면 첫 번째 시트 로드
             sheet_target = "Data" if "Data" in excel_file.sheet_names else excel_file.sheet_names[0]
             df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_target)
 
             st.success(f"'{sheet_target}' 시트 데이터를 성공적으로 불러왔습니다.")
 
-            # DB 인력 매핑 정보 가져오기
             members_data = supabase.table("members").select("*").execute().data
             if not members_data:
-                # DB 데이터가 없을 경우 기본 템플릿 직군 기준 매핑
                 df_m = pd.DataFrame([{"name": u, "role": "기타", "mm": 1.0} for u in df_raw["User"]])
             else:
                 df_m = pd.DataFrame(members_data)[["name", "role", "mm"]]
 
-            # 일자 컬럼 추출
             user_col = "User" if "User" in df_raw.columns else df_raw.columns[0]
             date_cols = [c for c in df_raw.columns if any(day in str(c) for day in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "월", "화", "수", "목", "금"])]
             
-            # 주차별 그룹핑 (5영업일 단위 자동 계산)
             w1_cols = [c for c in date_cols if any(k in str(c) for k in ["03 Aug", "04 Aug", "05 Aug", "06 Aug", "07 Aug"])]
             w2_cols = [c for c in date_cols if any(k in str(c) for k in ["10 Aug", "11 Aug", "12 Aug", "13 Aug", "14 Aug"])]
             
@@ -172,12 +174,8 @@ else:
             df_raw["8월_1W"] = df_raw[w1_cols].sum(axis=1) if w1_cols else 0.0
             df_raw["8월_2W"] = df_raw[w2_cols].sum(axis=1) if w2_cols else 0.0
 
-            # 인력 직군 병합
             merged_raw = pd.merge(df_m, df_raw[[user_col, "8월_실공수", "8월_1W", "8월_2W"]], left_on="name", right_on=user_col, how="right")
 
-            # =========================================================
-            # 위클리 보고 양식 집계 테이블 생성
-            # =========================================================
             report_rows = []
             for role in ROLE_LIST:
                 role_members = merged_raw[merged_raw["role"] == role]
@@ -187,16 +185,14 @@ else:
                 actual_w1 = role_members["8월_1W"].sum()
                 actual_w2 = role_members["8월_2W"].sum()
                 
-                # 기준 공수 계산 (수식 기준: 주별 8*MM*5, 월별 누적 워킹데이 기준)
                 std_w1 = 8.0 * mm_val * 5.0
                 std_w2 = 8.0 * mm_val * 5.0
-                std_month = (8.0 * mm_val * 20.0) - (8.0 * mm_val)  # 공휴일 제외 월간 기준
+                std_month = (8.0 * mm_val * 20.0) - (8.0 * mm_val)
                 
                 rate_month = (actual_month / std_month * 100) if std_month > 0 else 0.0
                 rate_w1 = (actual_w1 / std_w1 * 100) if std_w1 > 0 else 0.0
                 rate_w2 = (actual_w2 / std_w2 * 100) if std_w2 > 0 else 0.0
                 
-                # 판단 지표
                 if rate_month < 80.0:
                     status = "여유"
                 elif rate_month <= 120.0:
@@ -220,7 +216,6 @@ else:
             st.markdown("---")
             st.subheader("📊 위클리 보고 리포트 (양식 수식 적용 결과)")
 
-            # 스타일 서식 적용 함수
             def highlight_status(val):
                 if val == "여유":
                     return "background-color: #D9E1F2; color: #1F4E78; font-weight: bold;"
@@ -231,15 +226,13 @@ else:
                 return ""
 
             st.dataframe(
-                df_report.style.applymap(highlight_status, subset=["판단"]),
+                df_report.style.map(highlight_status, subset=["판단"]),
                 use_container_width=True
             )
 
-            # 직군별 가동률 차트
             st.subheader("📈 직군별 월간 가동률(%) 현황")
             st.bar_chart(data=df_report, x="구분", y="월 가동률(%)")
 
-            # 리포트 DB 저장
             st.markdown("---")
             report_name = st.text_input("보고서 저장 명칭", value="2026년 8월 2주차 위클리 보고서")
             if st.button("💾 이 위클리 보고서 DB에 저장하기"):
@@ -257,7 +250,7 @@ else:
     # =========================================================
     elif menu == "4. 과거 보고서 저장 이력 조회":
         st.title("📂 저장된 위클리 보고서 이력")
-        reports_data = supabase.table("reports").select("id, report_title, total_mm, total_hours, created_at").order("created_at", ascending=False).execute().data
+        reports_data = supabase.table("reports").select("id, report_title, total_mm, total_hours, created_at").order("created_at", desc=True).execute().data
 
         if reports_data:
             df_r = pd.DataFrame(reports_data)
