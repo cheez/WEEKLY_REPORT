@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import json
 import re
 import io
@@ -39,6 +39,7 @@ def init_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase = init_supabase()
+
 
 def db_query(fn, default=None, err_label="DB 작업"):
     """Supabase 호출 공통 래퍼. 실패 시 사용자 안내 후 default 반환."""
@@ -108,6 +109,88 @@ def count_working_days(start_dt, end_dt):
             w_days += 1
         cur += timedelta(days=1)
     return w_days
+
+
+# ============================================================
+# 위클리 리포트 계산 로직 (개별 날짜 컬럼 기반, 엑셀 양식 준거)
+#   - 월 가동률 = 실공수 / (8 × MM × NETWORKDAYS(첫날,마지막날) − 월휴가)
+#   - 주 가동률 = 주실공수 / (8 × MM × 그주근무일 − 그주휴가)
+#   - NETWORKDAYS/주근무일: 공휴일 제외 (count_working_days)
+#   - 연차: 분모 차감(B), MM 가중, v_date로 월/주 배분
+# ============================================================
+def parse_date_columns(columns):
+    """컬럼명에서 'DD Mon YYYY' 형식 날짜 추출 → {컬럼명: date}"""
+    date_cols = {}
+    for col in columns:
+        m = re.search(r"(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})", str(col))
+        if m:
+            try:
+                dt = datetime.strptime(
+                    f"{m.group(1)} {m.group(2)} {m.group(3)}", "%d %b %Y"
+                ).date()
+                date_cols[col] = dt
+            except ValueError:
+                pass
+    return date_cols
+
+
+def find_last_filled_date(df, date_cols):
+    """값이 실제로 채워진(>0) 마지막 날짜. 없으면 None."""
+    last = None
+    for col, dt in date_cols.items():
+        series = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        if (series > 0).any():
+            if last is None or dt > last:
+                last = dt
+    return last
+
+
+def build_weeks(first, last):
+    """
+    (가) 방식: 첫날이 속한 주부터, 첫날/마지막날로 범위 클램프. 월~금 기준.
+    첫날이 무슨 요일이든 1일 근무가 1주차에 포함되어 증발하지 않음.
+    반환: [(주번호, 주시작date, 주종료date), ...]
+    """
+    weeks = []
+    cur_mon = first - timedelta(days=first.weekday())  # 첫날 주의 월요일
+    wnum = 1
+    while cur_mon <= last:
+        wk_start = max(cur_mon, first)
+        wk_end = min(cur_mon + timedelta(days=4), last)  # 금요일 또는 마지막날
+        if wk_start <= wk_end:
+            weeks.append((wnum, wk_start, wk_end))
+            wnum += 1
+        cur_mon += timedelta(days=7)
+    return weeks
+
+
+def compute_vacation_map(vac_data, clean_name_fn, user_mm_map, first, last, weeks):
+    """
+    휴가 → {user_clean: {'month': h, 주번호: h, ...}}  (분모 차감용, MM 가중)
+    - 전일 8h / 반차 4h, × 개인 MM
+    - v_date가 데이터 기간 밖이거나 주말/공휴일이면 무시
+    """
+    result = {}
+    for v in (vac_data or []):
+        u = clean_name_fn(v["name"])
+        mm = user_mm_map.get(u, 1.0)
+        base = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
+        h = base * mm
+        try:
+            vd = pd.to_datetime(v["v_date"]).date()
+        except Exception:
+            continue
+        if not (first <= vd <= last):
+            continue
+        if vd.weekday() >= 5 or vd.strftime("%Y-%m-%d") in HOLIDAYS_KR:
+            continue
+        d = result.setdefault(u, {"month": 0.0})
+        d["month"] += h
+        for wn, s, e in weeks:
+            if s <= vd <= e:
+                d[wn] = d.get(wn, 0.0) + h
+                break
+    return result
 
 
 def week_label_to_range(year, month, wnum):
@@ -431,124 +514,70 @@ else:
                         ignore_index=True
                     )
 
-            # 주차 컬럼 자동 감지
-            week_cols = [c for c in df_raw.columns
-                         if re.search(r"\d+W|Week\s*\d+", str(c), re.IGNORECASE)
-                         and c not in ["User_clean", "Role"]]
-            week_date_ranges = {}
+            # ── 개별 날짜 컬럼 파싱 (Data 시트 형식: 'Sat, 01 Aug 2026 (h)') ──
+            date_cols = parse_date_columns(df_raw.columns)
 
-            # (A) 이미 주차 컬럼이 라벨로 존재 → 라벨에서 날짜 범위 역산 (공휴일 반영)
-            if week_cols:
-                for w in week_cols:
-                    parsed = parse_week_label(w)
-                    if parsed:
-                        rng = week_label_to_range(*parsed)
-                        if rng:
-                            week_date_ranges[w] = rng
-
-            # (B) 개별 날짜 컬럼일 경우 자동 파싱 및 주차 그룹화
-            if not week_cols:
-                parsed_dates = {}
-                for col in df_raw.columns:
-                    c_str = str(col).strip()
-                    if c_str.lower() in ["user", "user_clean", "role", "total", "total (h)", "총계", "합계"]:
-                        continue
-                    try:
-                        dt = pd.to_datetime(c_str, errors='coerce')
-                        if pd.notnull(dt):
-                            parsed_dates[col] = dt.date()
-                    except Exception:
-                        pass
-
-                if parsed_dates:
-                    grouped_weeks = {}
-                    for col_name, dt_val in sorted(parsed_dates.items(), key=lambda x: x[1]):
-                        first_day_of_month = dt_val.replace(day=1)
-                        dom_adjusted = dt_val.day + first_day_of_month.weekday()
-                        w_num = int((dom_adjusted - 1) / 7) + 1
-                        w_label = f"{dt_val.month}월 {w_num}W"
-                        grouped_weeks.setdefault(w_label, []).append((col_name, dt_val))
-
-                    for w_label, col_dt_list in grouped_weeks.items():
-                        cols_in_week = [x[0] for x in col_dt_list]
-                        dts_in_week = [x[1] for x in col_dt_list]
-                        for c in cols_in_week:
-                            df_raw[c] = pd.to_numeric(df_raw[c], errors="coerce").fillna(0.0)
-
-                        df_raw[w_label] = df_raw[cols_in_week].sum(axis=1)
-                        week_cols.append(w_label)
-                        # 업로드 경로: 실제 날짜의 min~max로 공휴일 계산
-                        week_date_ranges[w_label] = (min(dts_in_week), max(dts_in_week))
-
-            for w in week_cols:
-                df_raw[w] = pd.to_numeric(df_raw[w], errors="coerce").fillna(0.0)
-
-            # 공휴일 미반영(라벨 파싱 실패) 주차 안내
-            no_range_weeks = [w for w in week_cols if w not in week_date_ranges]
-            if no_range_weeks:
-                st.info(
-                    f"ℹ️ 다음 주차는 날짜 범위를 인식하지 못해 공휴일 반영 없이 주 5일 기준으로 계산됩니다: "
-                    f"{', '.join(no_range_weeks)} "
-                    f"(컬럼명을 'N월 MW' 형식으로 맞추면 공휴일이 자동 반영됩니다.)"
+            if not date_cols:
+                st.error(
+                    "⚠️ 날짜 컬럼을 찾지 못했습니다. 'Sat, 01 Aug 2026 (h)'처럼 "
+                    "개별 일자 컬럼이 포함된 데이터(Data 시트 형식)를 넣어주세요."
                 )
+                st.stop()
 
-            if "Total (h)" in df_raw.columns:
-                df_raw["Month_hours"] = pd.to_numeric(df_raw["Total (h)"], errors="coerce").fillna(0.0)
-            elif "Total" in df_raw.columns:
-                df_raw["Month_hours"] = pd.to_numeric(df_raw["Total"], errors="coerce").fillna(0.0)
-            else:
-                df_raw["Month_hours"] = df_raw[week_cols].sum(axis=1) if week_cols else 0.0
+            for col in date_cols:
+                df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce").fillna(0.0)
 
-            # 휴가(Vacation) 가산
+            first_date = min(date_cols.values())
+            last_date = find_last_filled_date(df_raw, date_cols)
+            if last_date is None:
+                last_date = max(date_cols.values())
+
+            weeks = build_weeks(first_date, last_date)          # [(주번호, s, e), ...]
+            month_networkdays = max(count_working_days(first_date, last_date), 1)
+            month_label = f"{first_date.month}월"
+
+            st.caption(
+                f"📆 기간: {first_date} ~ {last_date}  |  "
+                f"근무일(공휴일 제외) {month_networkdays}일  |  {len(weeks)}개 주차"
+            )
+
+            # ── 각 인원의 월/주 실공수 계산 ──
+            def _sum_range(row, s, e):
+                return sum(row[c] for c, dt in date_cols.items() if s <= dt <= e)
+
+            df_raw["월실공수"] = df_raw.apply(lambda r: _sum_range(r, first_date, last_date), axis=1)
+            week_val_cols = []
+            for wn, s, e in weeks:
+                col = f"__W{wn}__"
+                df_raw[col] = df_raw.apply(lambda r, s=s, e=e: _sum_range(r, s, e), axis=1)
+                week_val_cols.append((wn, col, s, e))
+
+            # ── 휴가(연차) 로드 → 분모 차감맵 (MM 가중, 월/주 배분) ──
             vac_data = db_query(
                 lambda: supabase.table("vacations").select("*").execute().data,
                 default=[], err_label="휴가 정보 조회"
             ) or []
-            vac_user_month = {}
-            if vac_data:
-                for v in vac_data:
-                    u_clean = clean_name(v["name"])
-                    u_mm = user_mm_map.get(u_clean, 1.0)
-                    base_h = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
-                    vac_user_month[u_clean] = vac_user_month.get(u_clean, 0.0) + (base_h * u_mm)
+            vac_map = compute_vacation_map(
+                vac_data, clean_name, user_mm_map, first_date, last_date, weeks
+            )
 
-            df_raw["Vac_Month"] = df_raw["User_clean"].map(vac_user_month).fillna(0.0)
-            df_raw["Month_총실공수"] = df_raw["Month_hours"] + df_raw["Vac_Month"]
+            # 직군별 휴가 합산 (분모 차감용)
+            role_vac_month = {}
+            role_vac_week = {}
+            for _, r in df_raw.iterrows():
+                u = r["User_clean"]
+                rl = r["Role"]
+                if u in vac_map and rl:
+                    role_vac_month[rl] = role_vac_month.get(rl, 0.0) + vac_map[u]["month"]
+                    for wn, _c, _s, _e in week_val_cols:
+                        if wn in vac_map[u]:
+                            role_vac_week.setdefault(rl, {}).setdefault(wn, 0.0)
+                            role_vac_week[rl][wn] += vac_map[u][wn]
 
-            role_sum_cols = week_cols + ["Month_총실공수"]
-            role_sum = df_raw.groupby("Role")[role_sum_cols].sum().reset_index()
+            # ── 직군별 집계 ──
+            agg_cols = ["월실공수"] + [c for _wn, c, _s, _e in week_val_cols]
+            role_sum = df_raw.groupby("Role")[agg_cols].sum().reset_index()
             report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
-
-            # 주차별 가동률 계산
-            calculated_week_cols = []
-            total_elapsed_working_days = 0
-
-            for w in week_cols:
-                if w in week_date_ranges:
-                    s_dt, e_dt = week_date_ranges[w]
-                    w_days = max(count_working_days(s_dt, e_dt), 1)
-                else:
-                    w_days = 5
-
-                total_elapsed_working_days += w_days
-
-                col_name = f"{w} 가동률(%)" if "가동률" not in w and "%" not in w else w
-                report_df[col_name] = report_df.apply(
-                    lambda r: f"{round(r[w] / (8.0 * r['MM'] * w_days) * 100)}%" if r["MM"] > 0 else "-", axis=1
-                )
-                calculated_week_cols.append(col_name)
-
-            if total_elapsed_working_days == 0:
-                total_elapsed_working_days = max(len(week_cols) * 5, 1)
-
-            # 누적 가동률 및 상태 판단
-            report_df["월간기준공수(h)"] = (total_elapsed_working_days * 8.0 * report_df["MM"]).round(1)
-            report_df["월 누적 가동률_num"] = report_df.apply(
-                lambda r: round(r["Month_총실공수"] / r["월간기준공수(h)"] * 100) if r["월간기준공수(h)"] > 0 else 0, axis=1
-            )
-            report_df["월 누적 가동률(%)"] = report_df.apply(
-                lambda r: f"{int(r['월 누적 가동률_num'])}%" if r["MM"] > 0 else "-", axis=1
-            )
 
             def get_status(rate_num, mm):
                 if mm == 0:
@@ -560,40 +589,73 @@ else:
                 else:
                     return "초과"
 
-            report_df["판단"] = report_df.apply(lambda r: get_status(r["월 누적 가동률_num"], r["MM"]), axis=1)
+            # ── 월 누적 가동률 (분모: 8×MM×NETWORKDAYS − 월휴가) ──
+            def _month_rate_num(r):
+                mm = r["MM"]
+                if mm <= 0:
+                    return 0
+                den = 8.0 * mm * month_networkdays - role_vac_month.get(r["Role"], 0.0)
+                return round(r["월실공수"] / den * 100) if den > 0 else 0
 
-            # 동적 표 구성
-            final_cols = ["Role", "MM", "월 누적 가동률(%)"] + calculated_week_cols + ["판단", "Month_총실공수"]
+            report_df["월 누적 가동률_num"] = report_df.apply(_month_rate_num, axis=1)
+            report_df["월 누적 가동률(%)"] = report_df.apply(
+                lambda r: f"{int(r['월 누적 가동률_num'])}%" if r["MM"] > 0 else "-", axis=1
+            )
+
+            # ── 주차별 가동률 (분모: 8×MM×그주근무일 − 그주휴가) ──
+            calculated_week_cols = []
+            week_meta = []  # (표시컬럼명, 값컬럼, 주번호, s, e, 근무일)
+            for wn, vcol, s, e in week_val_cols:
+                wd = max(count_working_days(s, e), 1)
+                disp = f"{first_date.month}월 {wn}W"
+
+                def _wrate(r, vcol=vcol, wd=wd, wn=wn):
+                    mm = r["MM"]
+                    if mm <= 0:
+                        return "-"
+                    den = 8.0 * mm * wd - role_vac_week.get(r["Role"], {}).get(wn, 0.0)
+                    return f"{round(r[vcol] / den * 100)}%" if den > 0 else "-"
+
+                report_df[disp] = report_df.apply(_wrate, axis=1)
+                calculated_week_cols.append(disp)
+                week_meta.append((disp, vcol, wn, s, e, wd))
+
+            report_df["판단"] = report_df.apply(
+                lambda r: get_status(r["월 누적 가동률_num"], r["MM"]), axis=1
+            )
+
+            # ── 표 구성: 구분 | MM | (월) | 주차들 | 판단 | 실공수 ──
+            month_col = f"{month_label} 가동률(%)"
+            report_df[month_col] = report_df["월 누적 가동률(%)"]
+
+            final_cols = ["Role", "MM", month_col] + calculated_week_cols + ["판단", "월실공수"]
             display_df = report_df[final_cols].copy()
-            display_df.rename(columns={"Role": "구분", "Month_총실공수": "월간 누적 실공수(h)"}, inplace=True)
+            display_df.rename(columns={"Role": "구분", "월실공수": "누적 실공수(h)"}, inplace=True)
 
-            total_mm = display_df["MM"].sum()
-            total_actual = display_df["월간 누적 실공수(h)"].sum()
-            total_std = report_df["월간기준공수(h)"].sum()
-            total_month_rate = round(total_actual / total_std * 100) if total_std > 0 else 0
+            # ── Total 행 ──
+            total_mm = report_df["MM"].sum()
+            total_actual = report_df["월실공수"].sum()
+            total_vac_month = sum(role_vac_month.values())
+            total_month_den = 8.0 * total_mm * month_networkdays - total_vac_month
+            total_month_rate = round(total_actual / total_month_den * 100) if total_month_den > 0 else 0
 
             total_dict = {
                 "구분": "Total",
                 "MM": total_mm,
-                "월 누적 가동률(%)": f"{total_month_rate}%"
+                month_col: f"{total_month_rate}%" if total_mm > 0 else "-",
             }
-
-            for idx, w in enumerate(week_cols):
-                c_name = calculated_week_cols[idx]
-                w_sum = report_df[w].sum()
-                if w in week_date_ranges:
-                    s_dt, e_dt = week_date_ranges[w]
-                    w_days = max(count_working_days(s_dt, e_dt), 1)
-                else:
-                    w_days = 5
-                w_total_rate = round(w_sum / (8.0 * total_mm * w_days) * 100) if total_mm > 0 else 0
-                total_dict[c_name] = f"{w_total_rate}%"
+            for disp, vcol, wn, s, e, wd in week_meta:
+                w_sum = report_df[vcol].sum()
+                w_vac = sum(role_vac_week.get(rl, {}).get(wn, 0.0) for rl in role_vac_week)
+                w_den = 8.0 * total_mm * wd - w_vac
+                total_dict[disp] = f"{round(w_sum / w_den * 100)}%" if w_den > 0 else "-"
 
             total_dict["판단"] = get_status(total_month_rate, total_mm)
-            total_dict["월간 누적 실공수(h)"] = round(total_actual, 1)
+            total_dict["누적 실공수(h)"] = round(total_actual, 1)
 
             total_row = pd.DataFrame([total_dict])
             final_view = pd.concat([display_df, total_row], ignore_index=True)
+
 
             st.markdown("---")
             st.subheader("📊 위클리 보고 리포트")
@@ -601,13 +663,16 @@ else:
             st.dataframe(
                 final_view.style.map(highlight_status, subset=["판단"]).format({
                     "MM": "{:.2f}",
-                    "월간 누적 실공수(h)": "{:,.1f}h"
+                    "누적 실공수(h)": "{:,.1f}h"
                 }),
                 use_container_width=True,
                 height=680
             )
 
-            default_report_title = f"{date.today().year}년 {date.today().month}월 위클리 가동률 보고서 ({len(week_cols)}주차)"
+            default_report_title = (
+                f"{first_date.year}년 {first_date.month}월 위클리 가동률 보고서 "
+                f"({len(weeks)}주차, ~{last_date.strftime('%m/%d')})"
+            )
             report_name = st.text_input("보고서 저장 명칭", value=default_report_title)
 
             save_disabled = has_unmatched
@@ -664,11 +729,18 @@ else:
 
                     df_detail = pd.DataFrame(detail["excel_data"])
 
+                    # 옛/새 컬럼명 모두 지원 (과거 저장분 호환)
+                    hours_col = None
+                    for cand in ["누적 실공수(h)", "월간 누적 실공수(h)"]:
+                        if cand in df_detail.columns:
+                            hours_col = cand
+                            break
+
                     if "MM" in df_detail.columns:
                         df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
-                    if "월간 누적 실공수(h)" in df_detail.columns:
-                        df_detail["월간 누적 실공수(h)"] = pd.to_numeric(
-                            df_detail["월간 누적 실공수(h)"], errors="coerce").fillna(0.0)
+                    if hours_col:
+                        df_detail[hours_col] = pd.to_numeric(
+                            df_detail[hours_col], errors="coerce").fillna(0.0)
 
                     st_view = df_detail.style
                     if "판단" in df_detail.columns:
@@ -677,8 +749,8 @@ else:
                     format_dict = {}
                     if "MM" in df_detail.columns:
                         format_dict["MM"] = "{:.2f}"
-                    if "월간 누적 실공수(h)" in df_detail.columns:
-                        format_dict["월간 누적 실공수(h)"] = "{:,.1f}h"
+                    if hours_col:
+                        format_dict[hours_col] = "{:,.1f}h"
 
                     if format_dict:
                         st_view = st_view.format(format_dict)
