@@ -5,6 +5,16 @@ from datetime import date, timedelta, datetime
 import json
 import re
 import io
+import os
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import mm
+from reportlab.lib import colors as _rlcolors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+)
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 # ---------------------------------------------------------
 # 1. Supabase 데이터베이스 연결 설정
@@ -39,6 +49,7 @@ def init_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase = init_supabase()
+
 
 def db_query(fn, default=None, err_label="DB 작업"):
     """Supabase 호출 공통 래퍼. 실패 시 사용자 안내 후 default 반환."""
@@ -269,6 +280,186 @@ def build_role_matcher(db_members, clean_fn):
     return match
 
 
+# ============================================================
+# PDF 리포트 생성 (reportlab + 나눔고딕 임베딩)
+# ============================================================
+_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+_FONTS_REGISTERED = False
+
+
+def _register_fonts():
+    global _FONTS_REGISTERED
+    if _FONTS_REGISTERED:
+        return
+    try:
+        pdfmetrics.registerFont(TTFont("Nanum", os.path.join(_FONT_DIR, "NanumGothic-Regular.ttf")))
+        pdfmetrics.registerFont(TTFont("Nanum-Bold", os.path.join(_FONT_DIR, "NanumGothic-Bold.ttf")))
+        _FONTS_REGISTERED = True
+    except Exception:
+        # 폰트 파일이 없으면 기본 폰트로 폴백 (한글 깨질 수 있음)
+        _FONTS_REGISTERED = False
+
+
+_PDF_STATUS_COLORS = {
+    "여유": (_rlcolors.HexColor("#D9E1F2"), _rlcolors.HexColor("#1F4E78")),
+    "적정": (_rlcolors.HexColor("#E2EFDA"), _rlcolors.HexColor("#375623")),
+    "초과": (_rlcolors.HexColor("#FCE4D6"), _rlcolors.HexColor("#C65911")),
+}
+_PDF_BRAND = _rlcolors.HexColor("#4A5A8A")
+_PDF_BRAND_LIGHT = _rlcolors.HexColor("#EEF1F8")
+_PDF_GRID = _rlcolors.HexColor("#D0D4DD")
+
+
+def build_report_pdf(title, rows, columns, meta=None):
+    """저장된 리포트를 예쁜 PDF(bytes)로 생성. landscape A4."""
+    _register_fonts()
+    fn = "Nanum" if _FONTS_REGISTERED else "Helvetica"
+    fnb = "Nanum-Bold" if _FONTS_REGISTERED else "Helvetica-Bold"
+    meta = meta or {}
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        leftMargin=14 * mm, rightMargin=14 * mm,
+        topMargin=13 * mm, bottomMargin=13 * mm, title=title,
+    )
+    styles = getSampleStyleSheet()
+    h_title = ParagraphStyle("T", parent=styles["Title"], fontName=fnb,
+                             fontSize=18, textColor=_PDF_BRAND, spaceAfter=2, leading=22)
+    h_sub = ParagraphStyle("S", parent=styles["Normal"], fontName=fn,
+                           fontSize=9, textColor=_rlcolors.HexColor("#666666"), spaceAfter=2)
+    cell = ParagraphStyle("C", fontName=fn, fontSize=8.5, leading=11, alignment=1)
+    cell_left = ParagraphStyle("CL", fontName=fn, fontSize=8.5, leading=11, alignment=0)
+    legend_style = ParagraphStyle("L", fontName=fn, fontSize=8,
+                                  textColor=_rlcolors.HexColor("#555555"))
+
+    story = [Paragraph(title, h_title)]
+    sub_bits = []
+    if meta.get("기간"):
+        sub_bits.append(f"기간: {meta['기간']}")
+    if meta.get("생성일"):
+        sub_bits.append(f"생성일: {meta['생성일']}")
+    if sub_bits:
+        story.append(Paragraph("  |  ".join(sub_bits), h_sub))
+    story.append(Spacer(1, 4))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=_PDF_BRAND, spaceAfter=8))
+
+    # 요약 박스
+    summary_items = [(k, str(meta[k])) for k in ["총 MM", "총 실공수", "Total 가동률"]
+                     if k in meta and meta[k] not in (None, "")]
+    if summary_items:
+        sum_data = [
+            [Paragraph(f"<b>{v}</b>", ParagraphStyle("sv", fontName=fnb, fontSize=13,
+                       alignment=1, textColor=_PDF_BRAND)) for _, v in summary_items],
+            [Paragraph(k, ParagraphStyle("sk", fontName=fn, fontSize=8, alignment=1,
+                       textColor=_rlcolors.HexColor("#888888"))) for k, _ in summary_items],
+        ]
+        sum_tbl = Table(sum_data, colWidths=[45 * mm] * len(summary_items))
+        sum_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), _PDF_BRAND_LIGHT),
+            ("BOX", (0, 0), (-1, -1), 0.5, _PDF_GRID),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, _rlcolors.white),
+            ("TOPPADDING", (0, 0), (-1, 0), 8),
+            ("BOTTOMPADDING", (0, -1), (-1, -1), 6),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(sum_tbl)
+        story.append(Spacer(1, 10))
+
+    # 본 표
+    header = [Paragraph(f"<b>{c}</b>", ParagraphStyle("hd", fontName=fnb, fontSize=8.5,
+              alignment=1, textColor=_rlcolors.white)) for c in columns]
+    table_data = [header]
+    status_row_idx = []
+    for i, row in enumerate(rows, start=1):
+        line = []
+        for c in columns:
+            val = row.get(c, "")
+            val = "" if val is None else str(val)
+            line.append(Paragraph(val, cell_left if c == "구분" else cell))
+        table_data.append(line)
+        if "판단" in row and row["판단"] in _PDF_STATUS_COLORS:
+            status_row_idx.append((i, row["판단"]))
+
+    ncol = len(columns)
+    total_w = 269 * mm
+    first_w = 46 * mm
+    rest_w = (total_w - first_w) / (ncol - 1) if ncol > 1 else total_w
+    col_widths = [first_w] + [rest_w] * (ncol - 1)
+
+    tbl = Table(table_data, colWidths=col_widths, repeatRows=1)
+    ts = [
+        ("BACKGROUND", (0, 0), (-1, 0), _PDF_BRAND),
+        ("TOPPADDING", (0, 0), (-1, 0), 6), ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("TOPPADDING", (0, 1), (-1, -1), 4), ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
+        ("GRID", (0, 0), (-1, -1), 0.4, _PDF_GRID),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_rlcolors.white, _rlcolors.HexColor("#F7F8FB")]),
+    ]
+    if "판단" in columns:
+        jcol = columns.index("판단")
+        for ridx, sval in status_row_idx:
+            bg, fg = _PDF_STATUS_COLORS[sval]
+            ts.append(("BACKGROUND", (jcol, ridx), (jcol, ridx), bg))
+            ts.append(("TEXTCOLOR", (jcol, ridx), (jcol, ridx), fg))
+    if rows and str(rows[-1].get("구분", "")) == "Total":
+        last = len(rows)
+        ts.append(("BACKGROUND", (0, last), (-1, last), _rlcolors.HexColor("#E8EBF3")))
+        ts.append(("FONTNAME", (0, last), (-1, last), fnb))
+    tbl.setStyle(TableStyle(ts))
+    story.append(tbl)
+
+    # 범례
+    story.append(Spacer(1, 10))
+
+    def _legend_cell(label, color):
+        hexcode = "#" + color.hexval()[2:]
+        return Paragraph(f'<font color="{hexcode}">■</font> {label}',
+                         ParagraphStyle("lg", fontName=fn, fontSize=8.5,
+                                        textColor=_rlcolors.HexColor("#444444")))
+
+    legend = Table([[
+        _legend_cell("여유 (80% 미만)", _PDF_STATUS_COLORS["여유"][1]),
+        _legend_cell("적정 (80~120%)", _PDF_STATUS_COLORS["적정"][1]),
+        _legend_cell("초과 (120% 초과)", _PDF_STATUS_COLORS["초과"][1]),
+    ]], colWidths=[45 * mm, 45 * mm, 45 * mm])
+    legend.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    story.append(legend)
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        "※ 가동률 = 실공수 ÷ (8h × MM × 근무일 − 휴가시간). 근무일은 주말·공휴일 제외.",
+        legend_style))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def resolve_role_mm(role_mm_rows, cutoff_date):
+    """
+    role_mm 테이블에서 apply_date <= cutoff_date 중 각 직군별 가장 최근 MM 조회.
+    반환: {role: mm}  (해당 없으면 빈 dict → 호출측에서 members sum fallback)
+    """
+    best = {}  # role -> (apply_date, mm)
+    for r in (role_mm_rows or []):
+        ad = r.get("apply_date")
+        if isinstance(ad, str):
+            try:
+                ad = date.fromisoformat(ad[:10])
+            except Exception:
+                continue
+        if ad is None:
+            continue
+        if ad <= cutoff_date:
+            role = r.get("role")
+            mm = r.get("mm")
+            if role is None or mm is None:
+                continue
+            if role not in best or ad > best[role][0]:
+                best[role] = (ad, float(mm))
+    return {role: mm for role, (ad, mm) in best.items()}
+
+
 def highlight_status(val):
     if val == "여유":
         return "background-color: #D9E1F2; color: #1F4E78; font-weight: bold;"
@@ -372,6 +563,55 @@ else:
                 if ok is not None:
                     st.success("삭제되었습니다.")
                     st.rerun()
+
+        # ─────────────────────────────────────────────
+        # 직군별 MM 기준 관리 (시점별, 가동률 분모용)
+        # ─────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("🎯 직군별 MM 기준 관리 (가동률 산정 기준)")
+        st.caption(
+            "직군별 MM을 적용일자와 함께 등록합니다. 리포트는 '데이터 마지막날 이전의 가장 최근 등록값'을 사용합니다. "
+            "(예: 9월 리포트인데 9월 등록이 없으면 8월 등록값 적용). "
+            "※ 등록값이 하나도 없으면 인력 목록의 MM 합계로 자동 대체됩니다."
+        )
+
+        with st.form("add_role_mm_form", clear_on_submit=True):
+            rc1, rc2, rc3 = st.columns(3)
+            rm_date = rc1.date_input("적용일자", date.today())
+            rm_role = rc2.selectbox("직군", ROLE_LIST, key="role_mm_role")
+            rm_mm = rc3.number_input("직군 MM", min_value=0.0, max_value=50.0, value=1.0, step=0.05, key="role_mm_val")
+
+            if st.form_submit_button("직군 MM 등록"):
+                ok = db_query(
+                    lambda: supabase.table("role_mm").insert(
+                        {"apply_date": str(rm_date), "role": rm_role, "mm": rm_mm}
+                    ).execute(),
+                    default=None, err_label="직군 MM 등록"
+                )
+                if ok is not None:
+                    st.success(f"'{rm_role}' MM={rm_mm} ({rm_date}) 등록 완료")
+                    st.rerun()
+
+        role_mm_data = db_query(
+            lambda: supabase.table("role_mm").select("*").order("apply_date", desc=True).order("role").execute().data,
+            default=[], err_label="직군 MM 목록 조회"
+        )
+        if role_mm_data:
+            df_rm = pd.DataFrame(role_mm_data)[["id", "apply_date", "role", "mm"]]
+            df_rm.columns = ["ID", "적용일자", "직군", "MM"]
+            st.dataframe(df_rm, use_container_width=True)
+
+            del_rm_id = st.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
+            if st.button("직군 MM 삭제"):
+                ok = db_query(
+                    lambda: supabase.table("role_mm").delete().eq("id", del_rm_id).execute(),
+                    default=None, err_label="직군 MM 삭제"
+                )
+                if ok is not None:
+                    st.success("삭제되었습니다.")
+                    st.rerun()
+        else:
+            st.info("등록된 직군별 MM 기준이 없습니다. (현재는 인력 목록 MM 합계로 대체 계산됩니다)")
 
     # =========================================================
     # 메뉴 2: 휴가/반차 수시 관리 (관리자 전용)
@@ -480,15 +720,13 @@ else:
             ) or []
 
             user_mm_map = {}
+            db_role_mm_sum = {}  # members 기반 직군 MM 합 (fallback용)
             if db_members:
                 df_db_m = pd.DataFrame(db_members)
                 df_db_m["mm"] = pd.to_numeric(df_db_m["mm"], errors="coerce").fillna(0.0)
-                db_role_mm_map = df_db_m.groupby("role")["mm"].sum().to_dict()
-                mm_table = pd.DataFrame([{"Role": r, "MM": db_role_mm_map.get(r, 0.0)} for r in ROLE_LIST])
+                db_role_mm_sum = df_db_m.groupby("role")["mm"].sum().to_dict()
                 for m in db_members:
                     user_mm_map[clean_name(m["name"])] = float(m.get("mm", 1.0))
-            else:
-                mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
 
             # 2-pass 매칭기 (정확 일치 우선 → 최장 접두 fallback)
             role_matcher = build_role_matcher(db_members, clean_name) if db_members else (lambda x: None)
@@ -506,12 +744,6 @@ else:
                     f"정확한 가동률 산출을 위해 [메뉴 1]에서 해당 인원을 등록하거나 이름 표기를 맞춰주세요."
                 )
                 df_raw.loc[unmatched_mask, "Role"] = UNMATCHED_ROLE
-                # 미분류 직군 행을 mm_table에 추가 (MM=0)
-                if UNMATCHED_ROLE not in mm_table["Role"].values:
-                    mm_table = pd.concat(
-                        [mm_table, pd.DataFrame([{"Role": UNMATCHED_ROLE, "MM": 0.0}])],
-                        ignore_index=True
-                    )
 
             # ── 개별 날짜 컬럼 파싱 (Data 시트 형식: 'Sat, 01 Aug 2026 (h)') ──
             date_cols = parse_date_columns(df_raw.columns)
@@ -531,13 +763,43 @@ else:
             if last_date is None:
                 last_date = max(date_cols.values())
 
+            # ── 직군별 MM 결정: role_mm(시점기준) 우선, 없으면 members 합 fallback ──
+            role_mm_rows = db_query(
+                lambda: supabase.table("role_mm").select("*").execute().data,
+                default=[], err_label="직군 MM 조회"
+            ) or []
+            resolved_mm = resolve_role_mm(role_mm_rows, last_date)  # {role: mm}
+
+            if resolved_mm:
+                mm_source_label = f"직군별 MM 기준 (≤ {last_date} 최신 등록값)"
+                mm_table = pd.DataFrame(
+                    [{"Role": r, "MM": resolved_mm.get(r, db_role_mm_sum.get(r, 0.0))}
+                     for r in ROLE_LIST]
+                )
+            elif db_members:
+                mm_source_label = "인력 목록 MM 합계 (직군 MM 기준 미등록)"
+                mm_table = pd.DataFrame(
+                    [{"Role": r, "MM": db_role_mm_sum.get(r, 0.0)} for r in ROLE_LIST]
+                )
+            else:
+                mm_source_label = "MM 정보 없음"
+                mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
+
+            # 미분류 직군 행 추가 (MM=0)
+            if has_unmatched and UNMATCHED_ROLE not in mm_table["Role"].values:
+                mm_table = pd.concat(
+                    [mm_table, pd.DataFrame([{"Role": UNMATCHED_ROLE, "MM": 0.0}])],
+                    ignore_index=True
+                )
+
             weeks = build_weeks(first_date, last_date)          # [(주번호, s, e), ...]
             month_networkdays = max(count_working_days(first_date, last_date), 1)
             month_label = f"{first_date.month}월"
 
             st.caption(
                 f"📆 기간: {first_date} ~ {last_date}  |  "
-                f"근무일(공휴일 제외) {month_networkdays}일  |  {len(weeks)}개 주차"
+                f"근무일(공휴일 제외) {month_networkdays}일  |  {len(weeks)}개 주차  |  "
+                f"MM 기준: {mm_source_label}"
             )
 
             # ── 각 인원의 월/주 실공수 계산 ──
@@ -588,12 +850,19 @@ else:
                 else:
                     return "초과"
 
-            # ── 월 누적 가동률 (분모: 8×MM×NETWORKDAYS − 월휴가) ──
-            def _month_rate_num(r):
+            # ── 월 목표 공수 (안 B: 8×MM×근무일 − 월휴가) & 월 가동률 ──
+            def _month_target(r):
                 mm = r["MM"]
                 if mm <= 0:
+                    return 0.0
+                return max(8.0 * mm * month_networkdays - role_vac_month.get(r["Role"], 0.0), 0.0)
+
+            report_df["월목표공수"] = report_df.apply(_month_target, axis=1)
+
+            def _month_rate_num(r):
+                if r["MM"] <= 0:
                     return 0
-                den = 8.0 * mm * month_networkdays - role_vac_month.get(r["Role"], 0.0)
+                den = r["월목표공수"]
                 return round(r["월실공수"] / den * 100) if den > 0 else 0
 
             report_df["월 누적 가동률_num"] = report_df.apply(_month_rate_num, axis=1)
@@ -623,24 +892,32 @@ else:
                 lambda r: get_status(r["월 누적 가동률_num"], r["MM"]), axis=1
             )
 
-            # ── 표 구성: 구분 | MM | (월) | 주차들 | 판단 | 실공수 ──
+            # ── 표 구성: MM | 구분 | 월 목표공수 | 누적 실공수 | 월 가동률 | 판단 | 주차들 ──
             month_col = f"{month_label} 가동률(%)"
             report_df[month_col] = report_df["월 누적 가동률(%)"]
 
-            final_cols = ["Role", "MM", month_col] + calculated_week_cols + ["판단", "월실공수"]
+            final_cols = (
+                ["MM", "Role", "월목표공수", "월실공수", month_col, "판단"]
+                + calculated_week_cols
+            )
             display_df = report_df[final_cols].copy()
-            display_df.rename(columns={"Role": "구분", "월실공수": "누적 실공수(h)"}, inplace=True)
+            display_df.rename(columns={
+                "Role": "구분",
+                "월목표공수": "월 목표공수(h)",
+                "월실공수": "누적 실공수(h)",
+            }, inplace=True)
 
             # ── Total 행 ──
             total_mm = report_df["MM"].sum()
             total_actual = report_df["월실공수"].sum()
-            total_vac_month = sum(role_vac_month.values())
-            total_month_den = 8.0 * total_mm * month_networkdays - total_vac_month
-            total_month_rate = round(total_actual / total_month_den * 100) if total_month_den > 0 else 0
+            total_target = report_df["월목표공수"].sum()
+            total_month_rate = round(total_actual / total_target * 100) if total_target > 0 else 0
 
             total_dict = {
                 "구분": "Total",
                 "MM": total_mm,
+                "월 목표공수(h)": round(total_target, 1),
+                "누적 실공수(h)": round(total_actual, 1),
                 month_col: f"{total_month_rate}%" if total_mm > 0 else "-",
             }
             for disp, vcol, wn, s, e, wd in week_meta:
@@ -650,7 +927,6 @@ else:
                 total_dict[disp] = f"{round(w_sum / w_den * 100)}%" if w_den > 0 else "-"
 
             total_dict["판단"] = get_status(total_month_rate, total_mm)
-            total_dict["누적 실공수(h)"] = round(total_actual, 1)
 
             total_row = pd.DataFrame([total_dict])
             final_view = pd.concat([display_df, total_row], ignore_index=True)
@@ -662,6 +938,7 @@ else:
             st.dataframe(
                 final_view.style.map(highlight_status, subset=["판단"]).format({
                     "MM": "{:.2f}",
+                    "월 목표공수(h)": "{:,.1f}h",
                     "누적 실공수(h)": "{:,.1f}h"
                 }),
                 use_container_width=True,
@@ -755,5 +1032,49 @@ else:
                         st_view = st_view.format(format_dict)
 
                     st.dataframe(st_view, use_container_width=True, height=680)
+
+                    # ── PDF 다운로드 ──
+                    st.markdown("---")
+                    try:
+                        pdf_columns = list(df_detail.columns)
+                        pdf_rows = df_detail.to_dict(orient="records")
+                        # 값 문자열화 (MM/실공수 포맷 유지)
+                        for r in pdf_rows:
+                            for k, v in list(r.items()):
+                                if k == "MM" and isinstance(v, (int, float)):
+                                    r[k] = f"{v:.2f}"
+                                elif hours_col and k == hours_col and isinstance(v, (int, float)):
+                                    r[k] = f"{v:,.1f}h"
+                                elif v is None:
+                                    r[k] = ""
+                                else:
+                                    r[k] = str(v)
+
+                        # 메타 구성
+                        total_row_data = next(
+                            (r for r in pdf_rows if r.get("구분") == "Total"), {})
+                        pdf_meta = {
+                            "생성일": str(detail.get("created_at", ""))[:10],
+                            "총 MM": f"{detail.get('total_mm', 0):.2f}",
+                            "총 실공수": f"{detail.get('total_hours', 0):,.1f}h",
+                        }
+                        # Total 가동률 (월 컬럼에서 추출)
+                        month_col_name = next(
+                            (c for c in pdf_columns if "가동률" in c and "월" in c), None)
+                        if month_col_name and total_row_data:
+                            pdf_meta["Total 가동률"] = total_row_data.get(month_col_name, "")
+
+                        pdf_bytes = build_report_pdf(
+                            detail["report_title"], pdf_rows, pdf_columns, pdf_meta
+                        )
+                        safe_name = re.sub(r"[^\w가-힣\-]", "_", detail["report_title"])
+                        st.download_button(
+                            "📄 PDF로 다운로드",
+                            data=pdf_bytes,
+                            file_name=f"{safe_name}.pdf",
+                            mime="application/pdf",
+                        )
+                    except Exception as e:
+                        st.warning(f"PDF 생성 중 문제가 발생했습니다: {e}")
         else:
             st.info("저장된 보고서가 없습니다.")
