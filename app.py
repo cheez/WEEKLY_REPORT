@@ -624,7 +624,7 @@ else:
         if members_data:
             df_m = pd.DataFrame(members_data)[["id", "name", "role", "mm"]]
             df_m.columns = ["ID", "User", "구분(직군)", "MM"]
-            st.dataframe(df_m, use_container_width=True)
+            st.dataframe(df_m, use_container_width=True, hide_index=True)
 
             del_id = st.number_input("삭제할 ID 입력", min_value=1, step=1)
             if st.button("팀원 삭제"):
@@ -679,7 +679,7 @@ else:
             # 적용일자 → 'YYYY-MM' 표시로 변환
             df_rm["apply_date"] = pd.to_datetime(df_rm["apply_date"], errors="coerce").dt.strftime("%Y-%m")
             df_rm.columns = ["ID", "적용월", "직군", "MM"]
-            st.dataframe(df_rm, use_container_width=True)
+            st.dataframe(df_rm, use_container_width=True, hide_index=True)
 
             del_rm_id = st.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
             if st.button("직군 MM 삭제"):
@@ -731,7 +731,7 @@ else:
         if v_data:
             df_v = pd.DataFrame(v_data)[["id", "name", "v_date", "v_type", "reason"]]
             df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
-            st.dataframe(df_v, use_container_width=True)
+            st.dataframe(df_v, use_container_width=True, hide_index=True)
 
             col_v1, col_v2 = st.columns([1, 4])
             del_v_id = col_v1.number_input("삭제할 휴가 ID 입력", min_value=1, step=1)
@@ -1122,7 +1122,7 @@ else:
         if reports_data:
             df_r = pd.DataFrame(reports_data)
             df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
-            st.dataframe(df_r, use_container_width=True)
+            st.dataframe(df_r, use_container_width=True, hide_index=True)
 
             report_options = {
                 f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
