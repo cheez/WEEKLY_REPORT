@@ -433,6 +433,80 @@ def build_report_pdf(title, rows, columns, meta=None):
         story.append(sum_tbl)
         story.append(Spacer(1, 10))
 
+    # ── 가동률 요약(구간별) + 산정 기준 (화면 메뉴4와 동일 구성) ──
+    summary_rows = meta.get("summary_rows")  # [{'구분','MM','월 가동률(평균)'}, ...]
+    criteria_text = meta.get("산정기준")
+    if summary_rows or criteria_text:
+        left_flow = []
+        right_flow = []
+
+        if summary_rows:
+            left_flow.append(Paragraph("가동률 요약", ParagraphStyle(
+                "smh", fontName=fnb, fontSize=10, textColor=_PDF_BRAND, spaceAfter=4)))
+            sm_header = [Paragraph(f"<b>{c}</b>", ParagraphStyle(
+                "smhd", fontName=fnb, fontSize=8.5, alignment=1, textColor=_rlcolors.white))
+                for c in ["구분", "MM", "월 가동률(평균)"]]
+            sm_data = [sm_header]
+            sm_status_idx = []
+            for i, sr in enumerate(summary_rows, start=1):
+                gu = str(sr.get("구분", ""))
+                mmv = sr.get("MM", "")
+                try:
+                    mmv = f"{float(mmv):.2f}"
+                except Exception:
+                    mmv = str(mmv)
+                rate = str(sr.get("월 가동률(평균)", ""))
+                sm_data.append([
+                    Paragraph(gu, cell), Paragraph(mmv, cell), Paragraph(rate, cell)])
+                if gu in _PDF_STATUS_COLORS:
+                    sm_status_idx.append((i, gu))
+            sm_tbl = Table(sm_data, colWidths=[30 * mm, 22 * mm, 33 * mm])
+            sm_ts = [
+                ("BACKGROUND", (0, 0), (-1, 0), _PDF_BRAND),
+                ("GRID", (0, 0), (-1, -1), 0.4, _PDF_GRID),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+            for ridx, sval in sm_status_idx:
+                bg, fg = _PDF_STATUS_COLORS[sval]
+                sm_ts.append(("BACKGROUND", (0, ridx), (0, ridx), bg))
+                sm_ts.append(("TEXTCOLOR", (0, ridx), (0, ridx), fg))
+            sm_tbl.setStyle(TableStyle(sm_ts))
+            left_flow.append(sm_tbl)
+
+        if criteria_text is None:
+            criteria_text = (
+                "가동률 = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day − 비가동시간] × 100\n\n"
+                "비가동시간 : 실제 업무 수행이 불가능한 시간\n(법정 휴무일, 전사 행사, 휴가, 병가 등)"
+            )
+        right_flow.append(Paragraph("가동률 산정 기준", ParagraphStyle(
+            "crh", fontName=fnb, fontSize=10, textColor=_PDF_BRAND, spaceAfter=4)))
+        crit_html = str(criteria_text).replace("\n", "<br/>")
+        right_flow.append(Table(
+            [[Paragraph(crit_html, ParagraphStyle(
+                "crb", fontName=fn, fontSize=8.5, leading=13,
+                textColor=_rlcolors.HexColor("#333333")))]],
+            colWidths=[120 * mm],
+            style=TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), _rlcolors.HexColor("#F5F7FB")),
+                ("BOX", (0, 0), (-1, -1), 0.5, _PDF_GRID),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ])))
+
+        # 좌우 배치
+        two_col = Table([[left_flow, right_flow]], colWidths=[90 * mm, 125 * mm])
+        two_col.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (0, 0), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), 8),
+        ]))
+        story.append(two_col)
+        story.append(Spacer(1, 12))
+
     # 본 표
     header = [Paragraph(f"<b>{c}</b>", ParagraphStyle("hd", fontName=fnb, fontSize=8.5,
               alignment=1, textColor=_rlcolors.white)) for c in columns]
@@ -1263,6 +1337,19 @@ else:
                         # 특이사항
                         if detail.get("special_note"):
                             pdf_meta["특이사항"] = detail["special_note"]
+
+                        # 가동률 요약(구간별) — 저장된 summary_data 사용
+                        if detail.get("summary_data"):
+                            sd = detail["summary_data"]
+                            # 컬럼 순서 정규화
+                            norm = []
+                            for row in sd:
+                                norm.append({
+                                    "구분": row.get("구분", ""),
+                                    "MM": row.get("MM", ""),
+                                    "월 가동률(평균)": row.get("월 가동률(평균)", ""),
+                                })
+                            pdf_meta["summary_rows"] = norm
 
                         pdf_bytes = build_report_pdf(
                             detail["report_title"], pdf_rows, pdf_columns, pdf_meta
