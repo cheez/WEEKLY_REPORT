@@ -977,8 +977,9 @@ else:
             report_df[month_col] = report_df["월 누적 가동률(%)"]
 
             final_cols = (
-                ["MM", "Role", "월목표공수", "월실공수", month_col, "판단"]
+                ["Role", "MM", "월목표공수", "월실공수", month_col]
                 + calculated_week_cols
+                + ["판단"]
             )
             display_df = report_df[final_cols].copy()
             display_df.rename(columns={
@@ -1009,8 +1010,9 @@ else:
             total_dict["판단"] = get_status(total_month_rate, total_mm)
 
             total_row = pd.DataFrame([total_dict])
-            # Total 행을 맨 위로
+            # Total 행을 맨 위로 + 컬럼 순서를 display_df와 동일하게 고정
             final_view = pd.concat([total_row, display_df], ignore_index=True)
+            final_view = final_view[display_df.columns.tolist()]
 
             # ── 써머리(구간별 집계): 초과/적정/여유 구간의 MM 합 & 평균 가동률 ──
             calc_df = report_df[report_df["MM"] > 0].copy()  # MM 있는 직군만
@@ -1147,12 +1149,30 @@ else:
                         if cand in df_detail.columns:
                             hours_col = cand
                             break
+                    target_col = "월 목표공수(h)" if "월 목표공수(h)" in df_detail.columns else None
 
                     if "MM" in df_detail.columns:
                         df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
                     if hours_col:
                         df_detail[hours_col] = pd.to_numeric(
                             df_detail[hours_col], errors="coerce").fillna(0.0)
+                    if target_col:
+                        df_detail[target_col] = pd.to_numeric(
+                            df_detail[target_col], errors="coerce").fillna(0.0)
+
+                    # ── 컬럼 순서를 메뉴3과 동일하게 재정렬 ──
+                    #   구분 | MM | 월 목표공수 | 누적 실공수 | 월 가동률 | 주차들 | 판단
+                    cols_now = list(df_detail.columns)
+                    week_cols_d = [c for c in cols_now if re.search(r"\d+\s*W", str(c))]
+                    rate_cols_d = [c for c in cols_now
+                                   if "가동률" in str(c) and "월" in str(c) and c not in week_cols_d]
+                    lead = [c for c in ["구분", "MM"] if c in cols_now]
+                    mid = [c for c in [target_col, hours_col] if c] + rate_cols_d
+                    tail = [c for c in ["판단"] if c in cols_now]
+                    ordered = lead + mid + week_cols_d + tail
+                    # 빠진 컬럼 있으면 뒤에 붙임 (안전)
+                    ordered += [c for c in cols_now if c not in ordered]
+                    df_detail = df_detail[ordered]
 
                     st_view = df_detail.style
                     if "판단" in df_detail.columns:
@@ -1163,6 +1183,8 @@ else:
                         format_dict["MM"] = "{:.2f}"
                     if hours_col:
                         format_dict[hours_col] = "{:,.1f}h"
+                    if target_col:
+                        format_dict[target_col] = "{:,.1f}h"
 
                     if format_dict:
                         st_view = st_view.format(format_dict)
@@ -1172,6 +1194,10 @@ else:
                     if summary_data:
                         try:
                             df_sum = pd.DataFrame(summary_data)
+                            # 컬럼 순서 고정: 구분 | MM | 월 가동률(평균)
+                            desired = [c for c in ["구분", "MM", "월 가동률(평균)"] if c in df_sum.columns]
+                            desired += [c for c in df_sum.columns if c not in desired]
+                            df_sum = df_sum[desired]
                             sc_left, sc_right = st.columns([1, 1])
                             with sc_left:
                                 st.markdown("##### 📌 가동률 요약")
