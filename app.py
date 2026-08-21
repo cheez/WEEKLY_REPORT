@@ -285,19 +285,86 @@ def build_role_matcher(db_members, clean_fn):
 # ============================================================
 _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 _FONTS_REGISTERED = False
+_PDF_FONT = "Helvetica"        # 최종 사용 폰트명 (한글 성공 시 Nanum)
+_PDF_FONT_BOLD = "Helvetica-Bold"
+
+
+def _try_register(reg_path, bold_path):
+    """주어진 경로의 폰트를 등록 시도. 성공하면 True."""
+    try:
+        pdfmetrics.registerFont(TTFont("Nanum", reg_path))
+        pdfmetrics.registerFont(TTFont("Nanum-Bold", bold_path))
+        return True
+    except Exception:
+        return False
 
 
 def _register_fonts():
-    global _FONTS_REGISTERED
+    """
+    한글 폰트 확보 순서:
+      1) repo 내 fonts/ 폴더
+      2) 시스템에 설치된 나눔/Noto CJK 폰트
+      3) 인터넷에서 다운로드 (여러 URL 시도)
+    성공하면 _PDF_FONT/_PDF_FONT_BOLD 를 'Nanum'으로 설정.
+    """
+    global _FONTS_REGISTERED, _PDF_FONT, _PDF_FONT_BOLD
     if _FONTS_REGISTERED:
         return
+
+    reg = os.path.join(_FONT_DIR, "NanumGothic-Regular.ttf")
+    bold = os.path.join(_FONT_DIR, "NanumGothic-Bold.ttf")
+
+    # 1) repo fonts 폴더
+    if os.path.exists(reg) and os.path.exists(bold):
+        if _try_register(reg, bold):
+            _PDF_FONT, _PDF_FONT_BOLD = "Nanum", "Nanum-Bold"
+            _FONTS_REGISTERED = True
+            return
+
+    # 2) 시스템 설치 폰트 탐색
+    sys_candidates = [
+        ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+         "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf"),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+         "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
+    ]
+    for rp, bp in sys_candidates:
+        if os.path.exists(rp):
+            bp = bp if os.path.exists(bp) else rp
+            if _try_register(rp, bp):
+                _PDF_FONT, _PDF_FONT_BOLD = "Nanum", "Nanum-Bold"
+                _FONTS_REGISTERED = True
+                return
+
+    # 3) 다운로드 (여러 소스 시도)
+    urls = [
+        ("https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
+         "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"),
+        ("https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
+         "https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/NanumGothic-Bold.ttf"),
+    ]
     try:
-        pdfmetrics.registerFont(TTFont("Nanum", os.path.join(_FONT_DIR, "NanumGothic-Regular.ttf")))
-        pdfmetrics.registerFont(TTFont("Nanum-Bold", os.path.join(_FONT_DIR, "NanumGothic-Bold.ttf")))
-        _FONTS_REGISTERED = True
+        import urllib.request
+        os.makedirs(_FONT_DIR, exist_ok=True)
+        for ru, bu in urls:
+            try:
+                if not os.path.exists(reg):
+                    urllib.request.urlretrieve(ru, reg)
+                if not os.path.exists(bold):
+                    urllib.request.urlretrieve(bu, bold)
+                if _try_register(reg, bold):
+                    _PDF_FONT, _PDF_FONT_BOLD = "Nanum", "Nanum-Bold"
+                    _FONTS_REGISTERED = True
+                    return
+            except Exception:
+                continue
     except Exception:
-        # 폰트 파일이 없으면 기본 폰트로 폴백 (한글 깨질 수 있음)
-        _FONTS_REGISTERED = False
+        pass
+
+    # 전부 실패 → Helvetica 유지 (한글 깨짐, 최소한 앱은 동작)
+    _FONTS_REGISTERED = False
 
 
 _PDF_STATUS_COLORS = {
@@ -313,8 +380,8 @@ _PDF_GRID = _rlcolors.HexColor("#D0D4DD")
 def build_report_pdf(title, rows, columns, meta=None):
     """저장된 리포트를 예쁜 PDF(bytes)로 생성. landscape A4."""
     _register_fonts()
-    fn = "Nanum" if _FONTS_REGISTERED else "Helvetica"
-    fnb = "Nanum-Bold" if _FONTS_REGISTERED else "Helvetica-Bold"
+    fn = _PDF_FONT
+    fnb = _PDF_FONT_BOLD
     meta = meta or {}
 
     buf = io.BytesIO()
@@ -429,6 +496,15 @@ def build_report_pdf(title, rows, columns, meta=None):
     story.append(Paragraph(
         "※ 가동률 = 실공수 ÷ (8h × MM × 근무일 − 휴가시간). 근무일은 주말·공휴일 제외.",
         legend_style))
+
+    # 특이사항
+    note = meta.get("특이사항")
+    if note:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(f"<b>특이사항</b>", ParagraphStyle(
+            "nt", fontName=fnb, fontSize=9.5, textColor=_PDF_BRAND, spaceAfter=3)))
+        story.append(Paragraph(str(note), ParagraphStyle(
+            "nb", fontName=fn, fontSize=9, textColor=_rlcolors.HexColor("#333333"), leading=13)))
 
     doc.build(story)
     buf.seek(0)
@@ -550,10 +626,6 @@ else:
             df_m.columns = ["ID", "User", "구분(직군)", "MM"]
             st.dataframe(df_m, use_container_width=True)
 
-            st.markdown("#### 💡 DB 집계 직군별 총 MM 합계")
-            db_role_summary = df_m.groupby("구분(직군)")["MM"].sum().reset_index()
-            st.dataframe(db_role_summary, use_container_width=True)
-
             del_id = st.number_input("삭제할 ID 입력", min_value=1, step=1)
             if st.button("팀원 삭제"):
                 ok = db_query(
@@ -570,26 +642,32 @@ else:
         st.markdown("---")
         st.subheader("🎯 직군별 MM 기준 관리 (가동률 산정 기준)")
         st.caption(
-            "직군별 MM을 적용일자와 함께 등록합니다. 리포트는 '데이터 마지막날 이전의 가장 최근 등록값'을 사용합니다. "
+            "직군별 MM을 적용 '월' 단위로 등록합니다. 리포트는 '데이터 기간의 월 이전(같은 월 포함)에 등록된 가장 최근 값'을 사용합니다. "
             "(예: 9월 리포트인데 9월 등록이 없으면 8월 등록값 적용). "
             "※ 등록값이 하나도 없으면 인력 목록의 MM 합계로 자동 대체됩니다."
         )
 
         with st.form("add_role_mm_form", clear_on_submit=True):
-            rc1, rc2, rc3 = st.columns(3)
-            rm_date = rc1.date_input("적용일자", date.today())
-            rm_role = rc2.selectbox("직군", ROLE_LIST, key="role_mm_role")
-            rm_mm = rc3.number_input("직군 MM", min_value=0.0, max_value=50.0, value=1.0, step=0.05, key="role_mm_val")
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            _this_year = date.today().year
+            rm_year = rc1.selectbox("적용 연도", list(range(_this_year - 1, _this_year + 3)),
+                                    index=1, key="role_mm_year")
+            rm_month = rc2.selectbox("적용 월", list(range(1, 13)),
+                                     index=date.today().month - 1, key="role_mm_month")
+            rm_role = rc3.selectbox("직군", ROLE_LIST, key="role_mm_role")
+            rm_mm = rc4.number_input("직군 MM", min_value=0.0, max_value=50.0, value=1.0, step=0.05, key="role_mm_val")
 
             if st.form_submit_button("직군 MM 등록"):
+                # 적용월의 1일로 저장 (DATE 스키마 유지, 시점조회는 월 기준으로 동작)
+                apply_first = date(int(rm_year), int(rm_month), 1)
                 ok = db_query(
                     lambda: supabase.table("role_mm").insert(
-                        {"apply_date": str(rm_date), "role": rm_role, "mm": rm_mm}
+                        {"apply_date": str(apply_first), "role": rm_role, "mm": rm_mm}
                     ).execute(),
                     default=None, err_label="직군 MM 등록"
                 )
                 if ok is not None:
-                    st.success(f"'{rm_role}' MM={rm_mm} ({rm_date}) 등록 완료")
+                    st.success(f"'{rm_role}' MM={rm_mm} ({rm_year}-{int(rm_month):02d}) 등록 완료")
                     st.rerun()
 
         role_mm_data = db_query(
@@ -597,8 +675,10 @@ else:
             default=[], err_label="직군 MM 목록 조회"
         )
         if role_mm_data:
-            df_rm = pd.DataFrame(role_mm_data)[["id", "apply_date", "role", "mm"]]
-            df_rm.columns = ["ID", "적용일자", "직군", "MM"]
+            df_rm = pd.DataFrame(role_mm_data)[["id", "apply_date", "role", "mm"]].copy()
+            # 적용일자 → 'YYYY-MM' 표시로 변환
+            df_rm["apply_date"] = pd.to_datetime(df_rm["apply_date"], errors="coerce").dt.strftime("%Y-%m")
+            df_rm.columns = ["ID", "적용월", "직군", "MM"]
             st.dataframe(df_rm, use_container_width=True)
 
             del_rm_id = st.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
@@ -929,12 +1009,65 @@ else:
             total_dict["판단"] = get_status(total_month_rate, total_mm)
 
             total_row = pd.DataFrame([total_dict])
-            final_view = pd.concat([display_df, total_row], ignore_index=True)
+            # Total 행을 맨 위로
+            final_view = pd.concat([total_row, display_df], ignore_index=True)
 
+            # ── 써머리(구간별 집계): 초과/적정/여유 구간의 MM 합 & 평균 가동률 ──
+            calc_df = report_df[report_df["MM"] > 0].copy()  # MM 있는 직군만
+            seg_summary = []
+            # Total 행
+            seg_summary.append({
+                "구분": "Total",
+                "MM": round(total_mm, 2),
+                "월 가동률(평균)": f"{total_month_rate}%",
+            })
+            for seg in ["초과", "적정", "여유"]:
+                sub = calc_df[calc_df["판단"] == seg]
+                if len(sub) > 0:
+                    seg_mm = round(sub["MM"].sum(), 2)
+                    seg_avg = round(sub["월 누적 가동률_num"].mean())
+                    seg_summary.append({
+                        "구분": seg,
+                        "MM": seg_mm,
+                        "월 가동률(평균)": f"{seg_avg}%",
+                    })
+                else:
+                    seg_summary.append({"구분": seg, "MM": 0.0, "월 가동률(평균)": "-"})
+            summary_df = pd.DataFrame(seg_summary)
 
             st.markdown("---")
             st.subheader("📊 위클리 보고 리포트")
 
+            # ── 상단 써머리 영역 (좌: 구간요약표 / 우: 산정기준) ──
+            sum_left, sum_right = st.columns([1, 1])
+            with sum_left:
+                st.markdown("##### 📌 가동률 요약")
+                st.dataframe(
+                    summary_df.style.map(highlight_status, subset=["구분"]).format({"MM": "{:.2f}"}),
+                    use_container_width=True, hide_index=True
+                )
+            with sum_right:
+                st.markdown("##### 📌 가동률 산정 기준")
+                st.markdown(
+                    """
+<div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
+<b>가동률</b> = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day − 비가동시간] × 100<br><br>
+<b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
+<span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
+</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("")  # 간격
+
+            # ── 특이사항 입력 ──
+            special_note = st.text_area(
+                "📝 특이사항 (선택) — 해당 월 특이사항을 작성하면 리포트에 함께 저장됩니다.",
+                value="", height=100, placeholder="예) 8월 3주차 전사 워크샵으로 가동률 일시 하락 등"
+            )
+
+            # ── 본 리포트 표 ──
             st.dataframe(
                 final_view.style.map(highlight_status, subset=["판단"]).format({
                     "MM": "{:.2f}",
@@ -957,12 +1090,15 @@ else:
 
             if st.button("💾 이 위클리 보고서 DB에 저장하기"):
                 json_data = final_view.to_json(orient="records", force_ascii=False)
+                summary_json = summary_df.to_json(orient="records", force_ascii=False)
                 ok = db_query(
                     lambda: supabase.table("reports").insert({
                         "report_title": report_name,
                         "total_mm": float(total_mm),
                         "total_hours": float(total_actual),
-                        "excel_data": json.loads(json_data)
+                        "excel_data": json.loads(json_data),
+                        "summary_data": json.loads(summary_json),
+                        "special_note": special_note,
                     }).execute(),
                     default=None, err_label="보고서 저장"
                 )
@@ -1031,6 +1167,40 @@ else:
                     if format_dict:
                         st_view = st_view.format(format_dict)
 
+                    # ── 써머리 & 특이사항 (있으면 표시) ──
+                    summary_data = detail.get("summary_data")
+                    if summary_data:
+                        try:
+                            df_sum = pd.DataFrame(summary_data)
+                            sc_left, sc_right = st.columns([1, 1])
+                            with sc_left:
+                                st.markdown("##### 📌 가동률 요약")
+                                sv = df_sum.style
+                                if "구분" in df_sum.columns:
+                                    sv = sv.map(highlight_status, subset=["구분"])
+                                if "MM" in df_sum.columns:
+                                    df_sum["MM"] = pd.to_numeric(df_sum["MM"], errors="coerce").fillna(0.0)
+                                    sv = sv.format({"MM": "{:.2f}"})
+                                st.dataframe(sv, use_container_width=True, hide_index=True)
+                            with sc_right:
+                                st.markdown("##### 📌 가동률 산정 기준")
+                                st.markdown(
+                                    """
+<div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
+<b>가동률</b> = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day − 비가동시간] × 100<br><br>
+<b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
+<span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
+</div>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
+                        except Exception:
+                            pass
+
+                    special_note_saved = detail.get("special_note")
+                    if special_note_saved:
+                        st.info(f"📝 특이사항: {special_note_saved}")
+
                     st.dataframe(st_view, use_container_width=True, height=680)
 
                     # ── PDF 다운로드 ──
@@ -1063,6 +1233,10 @@ else:
                             (c for c in pdf_columns if "가동률" in c and "월" in c), None)
                         if month_col_name and total_row_data:
                             pdf_meta["Total 가동률"] = total_row_data.get(month_col_name, "")
+
+                        # 특이사항
+                        if detail.get("special_note"):
+                            pdf_meta["특이사항"] = detail["special_note"]
 
                         pdf_bytes = build_report_pdf(
                             detail["report_title"], pdf_rows, pdf_columns, pdf_meta
