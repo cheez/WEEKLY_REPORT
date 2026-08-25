@@ -484,7 +484,7 @@ def build_report_pdf(title, rows, columns, meta=None):
 
         if criteria_text is None:
             criteria_text = (
-                "가동률 = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day − 비가동시간] × 100\n\n"
+                "가동률 = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day - 비가동시간] × 100\n\n"
                 "비가동시간 : 실제 업무 수행이 불가능한 시간\n(법정 휴무일, 전사 행사, 휴가, 병가 등)"
             )
         right_flow.append(Paragraph("가동률 산정 기준", ParagraphStyle(
@@ -575,7 +575,7 @@ def build_report_pdf(title, rows, columns, meta=None):
     story.append(legend)
     story.append(Spacer(1, 6))
     story.append(Paragraph(
-        "※ 가동률 = 실공수 ÷ (8h × MM × 근무일 − 휴가시간). 근무일은 주말·공휴일 제외.",
+        "※ 가동률 = 실공수 ÷ (8h × MM × 근무일 - 휴가시간). 근무일은 주말·공휴일 제외.",        
         legend_style))
 
     # 특이사항
