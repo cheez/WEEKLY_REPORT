@@ -805,7 +805,7 @@ else:
                         st.rerun()
 
         st.subheader("📜 등록된 휴가 내역")
-        st.caption("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
+        st.info("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
         v_data = db_query(
             lambda: supabase.table("vacations").select("*").order("v_date", desc=True).execute().data,
             default=[], err_label="휴가 내역 조회"
