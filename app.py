@@ -1206,11 +1206,25 @@ else:
             df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
             st.dataframe(df_r, use_container_width=True, hide_index=True)
 
+            # ── [추가] 관리자 전용 보고서 삭제 영역 (표 바로 아래) ──
+            if st.session_state.user_role == "admin":
+                col_del1, col_del2 = st.columns([1, 4])
+                del_report_id = col_del1.number_input("삭제할 보고서 ID 입력", min_value=1, step=1, key="del_rep_id")
+                if col_del2.button("보고서 삭제", key="btn_del_rep"):
+                    ok = db_query(
+                        lambda: supabase.table("reports").delete().eq("id", del_report_id).execute(),
+                        default=None,
+                        err_label="보고서 삭제"
+                    )
+                    if ok is not None:
+                        st.success(f"ID {del_report_id}번 보고서가 삭제되었습니다.")
+                        st.rerun()
+
             report_options = {
                 f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
                 for r in reports_data
             }
-
+            
             selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
             selected_id = report_options[selected_label]
 
