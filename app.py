@@ -771,8 +771,13 @@ else:
             df_rm.columns = ["ID", "적용월", "직군", "MM"]
             st.dataframe(df_rm, use_container_width=True, hide_index=True)
 
-            del_rm_id = st.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
-            if st.button("직군 MM 삭제"):
+            # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
+            col_rm1, col_rm2 = st.columns([1, 4])
+            del_rm_id = col_rm1.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
+            
+            # 버튼 상단 여백 보정 후 배치
+            col_rm2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if col_rm2.button("직군 MM 삭제"):
                 ok = db_query(
                     lambda: supabase.table("role_mm").delete().eq("id", del_rm_id).execute(),
                     default=None, err_label="직군 MM 삭제"
