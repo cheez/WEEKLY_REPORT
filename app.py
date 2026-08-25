@@ -1208,7 +1208,7 @@ else:
 
             # ── [추가] 관리자 전용 보고서 삭제 영역 (표 바로 아래) ──
             if st.session_state.user_role == "admin":
-                col_del1, col_del2 = st.columns([1, 4])
+                col_del1, col_del2 = st.columns([1, 4], vertical_alignment="bottom")
                 del_report_id = col_del1.number_input("삭제할 보고서 ID 입력", min_value=1, step=1, key="del_rep_id")
                 if col_del2.button("보고서 삭제", key="btn_del_rep"):
                     ok = db_query(
@@ -1224,7 +1224,7 @@ else:
                 f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
                 for r in reports_data
             }
-            
+
             selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
             selected_id = report_options[selected_label]
 
