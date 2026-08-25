@@ -786,13 +786,18 @@ else:
         member_names = [m["name"] for m in members_data] if members_data else []
 
         with st.form("add_v_form", clear_on_submit=True):
+            # 첫 번째 라인 (이름, 날짜, 구분)
             col1, col2, col3 = st.columns(3)
             v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
             v_date = col2.date_input("날짜", date.today())
             v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"])
-            v_reason = st.text_input("사유", "개인사유")
 
-            if st.form_submit_button("휴가 추가"):
+            # 두 번째 라인 (사유 + 휴가 추가 버튼을 한 줄 및 하단 정렬)
+            col_r1, col_r2 = st.columns([5, 1], vertical_alignment="bottom")
+            v_reason = col_r1.text_input("사유", "개인사유")
+            submit_clicked = col_r2.form_submit_button("휴가 추가", use_container_width=True)
+
+            if submit_clicked:
                 if v_name:
                     ok = db_query(
                         lambda: supabase.table("vacations").insert({
@@ -803,6 +808,7 @@ else:
                     if ok is not None:
                         st.success("휴가 정보가 저장되었습니다.")
                         st.rerun()
+                        
 
         st.subheader("📜 등록된 휴가 내역")
         st.info("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
