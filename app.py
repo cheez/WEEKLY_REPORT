@@ -676,17 +676,16 @@ else:
     # =========================================================
     # 메뉴 1: 기본정보 관리 (관리자 전용)
     # =========================================================
-if menu == "1. 기본정보 관리 (인력/MM)":
+    if menu == "1. 기본정보 관리 (인력/MM)":
         st.title("⚙️ 인력 기본 정보 & 직군별 MM 관리 (DB 영구 저장)")
 
         with st.form("add_member_form", clear_on_submit=True):
-            col1, col2, col3, col4 = st.columns([2.5, 2, 1.8, 1.5], vertical_alignment="bottom")
+            col1, col2, col3 = st.columns(3)
             m_name = col1.text_input("이름 (예: 강민경 또는 강AB)")
             m_role = col2.selectbox("직군", ROLE_LIST)
             m_mm = col3.number_input("투입 MM (예: 1.0, 0.5, 0.25)", min_value=0.05, max_value=5.0, value=1.0, step=0.05)
-            submit_clicked = col4.form_submit_button("DB에 팀원 등록", use_container_width=True)
 
-            if submit_clicked:
+            if st.form_submit_button("DB에 팀원 등록"):
                 if m_name:
                     ok = db_query(
                         lambda: supabase.table("members").insert(
@@ -809,7 +808,7 @@ if menu == "1. 기본정보 관리 (인력/MM)":
                     if ok is not None:
                         st.success("휴가 정보가 저장되었습니다.")
                         st.rerun()
-
+                        
 
         st.subheader("📜 등록된 휴가 내역")
         st.info("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
