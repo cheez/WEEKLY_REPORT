@@ -184,7 +184,14 @@ def compute_vacation_map(vac_data, clean_name_fn, user_mm_map, first, last, week
     for v in (vac_data or []):
         u = clean_name_fn(v["name"])
         mm = user_mm_map.get(u, 1.0)
-        base = 4.0 if "반차" in str(v.get("v_type", "")) else 8.0
+        vt = str(v.get("v_type", ""))
+        if "반반차" in vt:
+            base = 2.0
+        elif "반차" in vt:
+            base = 4.0
+        else:
+            base = 8.0
+
         h = base * mm
         try:
             vd = pd.to_datetime(v["v_date"]).date()
@@ -782,7 +789,7 @@ else:
             col1, col2, col3 = st.columns(3)
             v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
             v_date = col2.date_input("날짜", date.today())
-            v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차(오전) (4h)", "반차(오후) (4h)", "공가/병가 (8h)"])
+            v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"])
             v_reason = st.text_input("사유", "개인사유")
 
             if st.form_submit_button("휴가 추가"):
