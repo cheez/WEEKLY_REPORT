@@ -835,8 +835,12 @@ else:
             df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
             st.dataframe(df_v, use_container_width=True, hide_index=True)
 
+            # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
             col_v1, col_v2 = st.columns([1, 4])
             del_v_id = col_v1.number_input("삭제할 휴가 ID 입력", min_value=1, step=1)
+            
+            # 버튼 상단 여백 보정 후 배치
+            col_v2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
             if col_v2.button("휴가 삭제"):
                 ok = db_query(
                     lambda: supabase.table("vacations").delete().eq("id", del_v_id).execute(),
