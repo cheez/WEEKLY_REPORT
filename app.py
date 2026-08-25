@@ -680,12 +680,16 @@ else:
         st.title("⚙️ 인력 기본 정보 & 직군별 MM 관리 (DB 영구 저장)")
 
         with st.form("add_member_form", clear_on_submit=True):
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns([2.5, 2, 1.8, 1.5])
             m_name = col1.text_input("이름 (예: 강민경 또는 강AB)")
             m_role = col2.selectbox("직군", ROLE_LIST)
             m_mm = col3.number_input("투입 MM (예: 1.0, 0.5, 0.25)", min_value=0.05, max_value=5.0, value=1.0, step=0.05)
+            
+            # 버튼 위쪽 높이를 맞추기 위해 공백 라벨 처리
+            col4.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            submit_clicked = col4.form_submit_button("DB에 팀원 등록", use_container_width=True)
 
-            if st.form_submit_button("DB에 팀원 등록"):
+            if submit_clicked:
                 if m_name:
                     ok = db_query(
                         lambda: supabase.table("members").insert(
