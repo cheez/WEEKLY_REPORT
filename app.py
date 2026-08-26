@@ -1327,7 +1327,7 @@ else:
                                     df_sum["MM"] = pd.to_numeric(df_sum["MM"], errors="coerce").fillna(0.0)
                                     sv = sv.format({"MM": "{:.2f}"})
                                 st.dataframe(sv, use_container_width=True, hide_index=True)
-                                with sc_right:
+                            with sc_right:
                                 st.markdown("##### 📌 가동률 산정 기준")
                                 st.markdown(
                                     """
