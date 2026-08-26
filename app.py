@@ -484,9 +484,11 @@ def build_report_pdf(title, rows, columns, meta=None):
 
         if criteria_text is None:
             criteria_text = (
-                "가동률 = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day - 비가동시간] × 100\n\n"
+                "가동률 = 실공수시간 ÷ 목표공수시간 × 100\n\n"
+                "목표공수 : [8시간 × M/M × 해당 기간 Working Day - 비가동시간]\n\n"
                 "비가동시간 : 실제 업무 수행이 불가능한 시간\n(법정 휴무일, 전사 행사, 휴가, 병가 등)"
             )
+
         right_flow.append(Paragraph("가동률 산정 기준", ParagraphStyle(
             "crh", fontName=fnb, fontSize=10, textColor=_PDF_BRAND, spaceAfter=4)))
         crit_html = str(criteria_text).replace("\n", "<br/>")
@@ -573,11 +575,7 @@ def build_report_pdf(title, rows, columns, meta=None):
     ]], colWidths=[45 * mm, 45 * mm, 45 * mm])
     legend.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
     story.append(legend)
-    story.append(Spacer(1, 6))
-    story.append(Paragraph(
-        "※ 가동률 = 실공수 ÷ (8h × MM × 근무일 - 휴가시간). 근무일은 주말·공휴일 제외.",        
-        legend_style))
-
+    
     # 특이사항
     note = meta.get("특이사항")
     if note:
@@ -1159,7 +1157,8 @@ else:
                 st.markdown(
                     """
 <div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
-<b>가동률</b> = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day − 비가동시간] × 100<br><br>
+<b>가동률</b> = 실공수시간 ÷ 목표공수시간 × 100<br><br>
+<b>목표공수</b> : [8시간 × M/M × 해당 기간 Working Day − 비가동시간]<br><br>
 <b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
 <span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
 </div>
@@ -1328,12 +1327,13 @@ else:
                                     df_sum["MM"] = pd.to_numeric(df_sum["MM"], errors="coerce").fillna(0.0)
                                     sv = sv.format({"MM": "{:.2f}"})
                                 st.dataframe(sv, use_container_width=True, hide_index=True)
-                            with sc_right:
+                                with sc_right:
                                 st.markdown("##### 📌 가동률 산정 기준")
                                 st.markdown(
                                     """
 <div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
-<b>가동률</b> = 실공수시간 ÷ [8시간 × M/M × 해당 기간 Working Day − 비가동시간] × 100<br><br>
+<b>가동률</b> = 실공수시간 ÷ 목표공수시간 × 100<br><br>
+<b>목표공수</b> : [8시간 × M/M × 해당 기간 Working Day − 비가동시간]<br><br>
 <b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
 <span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
 </div>
