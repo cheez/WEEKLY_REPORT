@@ -1259,9 +1259,6 @@ elif menu == "4. 과거 보고서 저장 이력 조회":
         selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
         selected_id = report_options[selected_label]
 
-        # 버튼은 유지(수동 새로고침 용도)하되, 선택만 바꿔도 아래 상세가 바로 표시됨
-        st.button("보고서 불러오기")
-
         detail_list = db_query(
             lambda: supabase.table("reports").select("*").eq("id", selected_id).execute().data,
             default=[], err_label="보고서 상세 조회"
