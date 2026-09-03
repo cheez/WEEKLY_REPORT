@@ -33,7 +33,7 @@ def _require_secret(key):
         st.error(
             f"⚠️ 필수 설정 '{key}' 가 없습니다.\n\n"
             "Streamlit Secrets(또는 로컬 `.streamlit/secrets.toml`)에 "
-            "`SUPABASE_URL`, `SUPABASE_KEY`, `ADMIN_PW`, `USER_PW` 를 설정해 주세요."
+            "`SUPABASE_URL`, `SUPABASE_KEY`, `ADMIN_PW` 를 설정해 주세요."
         )
         st.stop()
     return val
@@ -41,7 +41,6 @@ def _require_secret(key):
 SUPABASE_URL = _require_secret("SUPABASE_URL")
 SUPABASE_KEY = _require_secret("SUPABASE_KEY")   # sb_secret_... (서버 전용)
 ADMIN_PW = _require_secret("ADMIN_PW")
-USER_PW = _require_secret("USER_PW")
 
 
 @st.cache_resource
@@ -625,789 +624,803 @@ def highlight_status(val):
     return ""
 
 
+# 화면용 범례 (PDF 하단 범례와 동일 구성)
+LEGEND_HTML = """
+<div style="display:flex;gap:22px;font-size:0.9rem;margin-top:6px;">
+<span><span style="color:#1F4E78;">■</span> 여유 (80% 미만)</span>
+<span><span style="color:#375623;">■</span> 적정 (80~120%)</span>
+<span><span style="color:#C65911;">■</span> 초과 (120% 초과)</span>
+</div>
+"""
+
+
 st.set_page_config(page_title="위클리 가동률 & MM 리포트 시스템", layout="wide")
 
 # ---------------------------------------------------------
 # 2. 로그인 & 권한 관리
+#    - 일반 사용자: 로그인 없이 기본 접속 (보고서 조회 전용)
+#    - 관리자: 사이드바에서 비밀번호 입력 시 승격
 # ---------------------------------------------------------
 if "user_role" not in st.session_state:
-    st.session_state.user_role = None
+    st.session_state.user_role = "user"
 
-st.sidebar.title("🔒 시스템 로그인")
-
-if st.session_state.user_role is None:
-    role_choice = st.sidebar.radio("접속 권한 선택", ["일반 사용자 (보고서 조회 전용)", "관리자 (기본정보/보고서 생성)"])
-    password_input = st.sidebar.text_input("비밀번호 입력", type="password")
-
-    if st.sidebar.button("로그인"):
-        if role_choice == "관리자 (기본정보/보고서 생성)" and password_input == ADMIN_PW:
+if st.session_state.user_role == "admin":
+    st.sidebar.title("🔒 관리자 모드")
+    st.sidebar.info("현재 권한: **관리자**")
+    if st.sidebar.button("로그아웃"):
+        st.session_state.user_role = "user"
+        st.rerun()
+else:
+    st.sidebar.title("🔒 관리자 로그인")
+    st.sidebar.caption("일반 사용자는 로그인 없이 보고서를 조회할 수 있습니다.")
+    password_input = st.sidebar.text_input("관리자 비밀번호", type="password")
+    if st.sidebar.button("관리자 로그인"):
+        if password_input == ADMIN_PW:
             st.session_state.user_role = "admin"
-            st.rerun()
-        elif role_choice == "일반 사용자 (보고서 조회 전용)" and password_input == USER_PW:
-            st.session_state.user_role = "user"
             st.rerun()
         else:
             st.sidebar.error("비밀번호가 올바르지 않습니다.")
-else:
-    st.sidebar.info(f"현재 권한: **{'관리자' if st.session_state.user_role == 'admin' else '일반 사용자'}**")
-    if st.sidebar.button("로그아웃"):
-        st.session_state.user_role = None
-        st.rerun()
 
 # ---------------------------------------------------------
 # 3. 메뉴 구성
+#    - 일반 사용자는 메뉴 4(보고서 조회)만 → 자동으로 첫 화면
 # ---------------------------------------------------------
-if st.session_state.user_role is None:
-    st.title("📊 위클리 근무 공수 & 가동률 리포트 시스템")
-    st.warning("👈 왼쪽 사이드바에서 로그인해 주세요.")
+if st.session_state.user_role == "admin":
+    menu = st.sidebar.selectbox("📌 메뉴 선택", [
+        "1. 기본정보 관리 (인력/MM)",
+        "2. 휴가/반차 수시 관리",
+        "3. 엑셀 데이터 입력 및 위클리 리포트 생성",
+        "4. 과거 보고서 저장 이력 조회"
+    ])
 else:
-    if st.session_state.user_role == "admin":
-        menu = st.sidebar.selectbox("📌 메뉴 선택", [
-            "1. 기본정보 관리 (인력/MM)",
-            "2. 휴가/반차 수시 관리",
-            "3. 엑셀 데이터 입력 및 위클리 리포트 생성",
-            "4. 과거 보고서 저장 이력 조회"
-        ])
-    else:
-        menu = st.sidebar.selectbox("📌 메뉴 선택", ["4. 과거 보고서 저장 이력 조회"])
+    menu = "4. 과거 보고서 저장 이력 조회"
 
-    # =========================================================
-    # 메뉴 1: 기본정보 관리 (관리자 전용)
-    # =========================================================
-    if menu == "1. 기본정보 관리 (인력/MM)":
-        st.title("⚙️ 인력 기본 정보 & 직군별 MM 관리 (DB 영구 저장)")
+# =========================================================
+# 메뉴 1: 기본정보 관리 (관리자 전용)
+# =========================================================
+if menu == "1. 기본정보 관리 (인력/MM)":
+    st.title("⚙️ 인력 기본 정보 & 직군별 MM 관리 (DB 영구 저장)")
 
-        with st.form("add_member_form", clear_on_submit=True):
-            col1, col2, col3, col4 = st.columns([2.5, 2, 1.8, 1.5])
-            m_name = col1.text_input("이름 (예: 강민경 또는 강AB)")
-            m_role = col2.selectbox("직군", ROLE_LIST)
-            m_mm = col3.number_input("투입 MM (예: 1.0, 0.5, 0.25)", min_value=0.05, max_value=5.0, value=1.0, step=0.05)
-            
-            # 버튼 위쪽 높이를 맞추기 위해 공백 라벨 처리
-            col4.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            submit_clicked = col4.form_submit_button("DB에 팀원 등록", use_container_width=True)
+    with st.form("add_member_form", clear_on_submit=True):
+        col1, col2, col3, col4 = st.columns([2.5, 2, 1.8, 1.5])
+        m_name = col1.text_input("이름 (예: 강민경 또는 강AB)")
+        m_role = col2.selectbox("직군", ROLE_LIST)
+        m_mm = col3.number_input("투입 MM (예: 1.0, 0.5, 0.25)", min_value=0.05, max_value=5.0, value=1.0, step=0.05)
 
-            if submit_clicked:
-                if m_name:
-                    ok = db_query(
-                        lambda: supabase.table("members").insert(
-                            {"name": m_name.strip(), "role": m_role, "mm": m_mm}
-                        ).execute(),
-                        default=None, err_label="팀원 등록"
-                    )
-                    if ok is not None:
-                        st.success(f"'{m_name}' ({m_role}, {m_mm} MM) 등록 완료")
-                        st.rerun()
+        # 버튼 위쪽 높이를 맞추기 위해 공백 라벨 처리
+        col4.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        submit_clicked = col4.form_submit_button("DB에 팀원 등록", use_container_width=True)
 
-        st.subheader("📋 현재 DB에 등록된 인력 목록")
-        members_data = db_query(
-            lambda: supabase.table("members").select("*").order("id").execute().data,
-            default=[], err_label="인력 목록 조회"
-        )
-        if members_data:
-            df_m = pd.DataFrame(members_data)[["id", "name", "role", "mm"]]
-            df_m.columns = ["ID", "User", "구분(직군)", "MM"]
-            st.dataframe(df_m, use_container_width=True, hide_index=True)
-
-            # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
-            col_d1, col_d2 = st.columns([1, 4])
-            del_id = col_d1.number_input("삭제할 ID 입력", min_value=1, step=1)
-            
-            # 버튼 상단 여백 보정 후 배치
-            col_d2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if col_d2.button("팀원 삭제"):
+        if submit_clicked:
+            if m_name:
                 ok = db_query(
-                    lambda: supabase.table("members").delete().eq("id", del_id).execute(),
-                    default=None, err_label="팀원 삭제"
-                )
-                if ok is not None:
-                    st.success("삭제되었습니다.")
-                    st.rerun()
-
-        # ─────────────────────────────────────────────
-        # 직군별 MM 기준 관리 (시점별, 가동률 분모용)
-        # ─────────────────────────────────────────────
-        st.markdown("---")
-        st.subheader("🎯 직군별 MM 기준 관리 (가동률 산정 기준)")
-        st.caption(
-            "직군별 MM을 적용 '월' 단위로 등록합니다. 리포트는 '데이터 기간의 월 이전(같은 월 포함)에 등록된 가장 최근 값'을 사용합니다. "
-            "(예: 9월 리포트인데 9월 등록이 없으면 8월 등록값 적용). "
-            "※ 등록값이 하나도 없으면 인력 목록의 MM 합계로 자동 대체됩니다."
-        )
-
-        with st.form("add_role_mm_form", clear_on_submit=True):
-            rc1, rc2, rc3, rc4 = st.columns(4)
-            _this_year = date.today().year
-            rm_year = rc1.selectbox("적용 연도", list(range(_this_year - 1, _this_year + 3)),
-                                    index=1, key="role_mm_year")
-            rm_month = rc2.selectbox("적용 월", list(range(1, 13)),
-                                     index=date.today().month - 1, key="role_mm_month")
-            rm_role = rc3.selectbox("직군", ROLE_LIST, key="role_mm_role")
-            rm_mm = rc4.number_input("직군 MM", min_value=0.0, max_value=50.0, value=1.0, step=0.05, key="role_mm_val")
-
-            if st.form_submit_button("직군 MM 등록"):
-                # 적용월의 1일로 저장 (DATE 스키마 유지, 시점조회는 월 기준으로 동작)
-                apply_first = date(int(rm_year), int(rm_month), 1)
-                ok = db_query(
-                    lambda: supabase.table("role_mm").insert(
-                        {"apply_date": str(apply_first), "role": rm_role, "mm": rm_mm}
+                    lambda: supabase.table("members").insert(
+                        {"name": m_name.strip(), "role": m_role, "mm": m_mm}
                     ).execute(),
-                    default=None, err_label="직군 MM 등록"
+                    default=None, err_label="팀원 등록"
                 )
                 if ok is not None:
-                    st.success(f"'{rm_role}' MM={rm_mm} ({rm_year}-{int(rm_month):02d}) 등록 완료")
+                    st.success(f"'{m_name}' ({m_role}, {m_mm} MM) 등록 완료")
                     st.rerun()
 
-        role_mm_data = db_query(
-            lambda: supabase.table("role_mm").select("*").order("apply_date", desc=True).order("role").execute().data,
-            default=[], err_label="직군 MM 목록 조회"
-        )
-        if role_mm_data:
-            df_rm = pd.DataFrame(role_mm_data)[["id", "apply_date", "role", "mm"]].copy()
-            # 적용일자 → 'YYYY-MM' 표시로 변환
-            df_rm["apply_date"] = pd.to_datetime(df_rm["apply_date"], errors="coerce").dt.strftime("%Y-%m")
-            df_rm.columns = ["ID", "적용월", "직군", "MM"]
-            st.dataframe(df_rm, use_container_width=True, hide_index=True)
+    st.subheader("📋 현재 DB에 등록된 인력 목록")
+    members_data = db_query(
+        lambda: supabase.table("members").select("*").order("id").execute().data,
+        default=[], err_label="인력 목록 조회"
+    )
+    if members_data:
+        df_m = pd.DataFrame(members_data)[["id", "name", "role", "mm"]]
+        df_m.columns = ["ID", "User", "구분(직군)", "MM"]
+        st.dataframe(df_m, use_container_width=True, hide_index=True)
 
-            # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
-            col_rm1, col_rm2 = st.columns([1, 4])
-            del_rm_id = col_rm1.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
-            
-            # 버튼 상단 여백 보정 후 배치
-            col_rm2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if col_rm2.button("직군 MM 삭제"):
+        # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
+        col_d1, col_d2 = st.columns([1, 4])
+        del_id = col_d1.number_input("삭제할 ID 입력", min_value=1, step=1)
+
+        # 버튼 상단 여백 보정 후 배치
+        col_d2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if col_d2.button("팀원 삭제"):
+            ok = db_query(
+                lambda: supabase.table("members").delete().eq("id", del_id).execute(),
+                default=None, err_label="팀원 삭제"
+            )
+            if ok is not None:
+                st.success("삭제되었습니다.")
+                st.rerun()
+
+    # ─────────────────────────────────────────────
+    # 직군별 MM 기준 관리 (시점별, 가동률 분모용)
+    # ─────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🎯 직군별 MM 기준 관리 (가동률 산정 기준)")
+    st.caption(
+        "직군별 MM을 적용 '월' 단위로 등록합니다. 리포트는 '데이터 기간의 월 이전(같은 월 포함)에 등록된 가장 최근 값'을 사용합니다. "
+        "(예: 9월 리포트인데 9월 등록이 없으면 8월 등록값 적용). "
+        "※ 등록값이 하나도 없으면 인력 목록의 MM 합계로 자동 대체됩니다."
+    )
+
+    with st.form("add_role_mm_form", clear_on_submit=True):
+        rc1, rc2, rc3, rc4 = st.columns(4)
+        _this_year = date.today().year
+        rm_year = rc1.selectbox("적용 연도", list(range(_this_year - 1, _this_year + 3)),
+                                index=1, key="role_mm_year")
+        rm_month = rc2.selectbox("적용 월", list(range(1, 13)),
+                                 index=date.today().month - 1, key="role_mm_month")
+        rm_role = rc3.selectbox("직군", ROLE_LIST, key="role_mm_role")
+        rm_mm = rc4.number_input("직군 MM", min_value=0.0, max_value=50.0, value=1.0, step=0.05, key="role_mm_val")
+
+        if st.form_submit_button("직군 MM 등록"):
+            # 적용월의 1일로 저장 (DATE 스키마 유지, 시점조회는 월 기준으로 동작)
+            apply_first = date(int(rm_year), int(rm_month), 1)
+            ok = db_query(
+                lambda: supabase.table("role_mm").insert(
+                    {"apply_date": str(apply_first), "role": rm_role, "mm": rm_mm}
+                ).execute(),
+                default=None, err_label="직군 MM 등록"
+            )
+            if ok is not None:
+                st.success(f"'{rm_role}' MM={rm_mm} ({rm_year}-{int(rm_month):02d}) 등록 완료")
+                st.rerun()
+
+    role_mm_data = db_query(
+        lambda: supabase.table("role_mm").select("*").order("apply_date", desc=True).order("role").execute().data,
+        default=[], err_label="직군 MM 목록 조회"
+    )
+    if role_mm_data:
+        df_rm = pd.DataFrame(role_mm_data)[["id", "apply_date", "role", "mm"]].copy()
+        # 적용일자 → 'YYYY-MM' 표시로 변환
+        df_rm["apply_date"] = pd.to_datetime(df_rm["apply_date"], errors="coerce").dt.strftime("%Y-%m")
+        df_rm.columns = ["ID", "적용월", "직군", "MM"]
+        st.dataframe(df_rm, use_container_width=True, hide_index=True)
+
+        # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
+        col_rm1, col_rm2 = st.columns([1, 4])
+        del_rm_id = col_rm1.number_input("삭제할 직군MM ID 입력", min_value=1, step=1, key="del_role_mm")
+
+        # 버튼 상단 여백 보정 후 배치
+        col_rm2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if col_rm2.button("직군 MM 삭제"):
+            ok = db_query(
+                lambda: supabase.table("role_mm").delete().eq("id", del_rm_id).execute(),
+                default=None, err_label="직군 MM 삭제"
+            )
+            if ok is not None:
+                st.success("삭제되었습니다.")
+                st.rerun()
+    else:
+        st.info("등록된 직군별 MM 기준이 없습니다. (현재는 인력 목록 MM 합계로 대체 계산됩니다)")
+
+# =========================================================
+# 메뉴 2: 휴가/반차 수시 관리 (관리자 전용)
+# =========================================================
+elif menu == "2. 휴가/반차 수시 관리":
+    st.title("📅 휴가 / 반차 수시 일정 관리")
+    members_data = db_query(
+        lambda: supabase.table("members").select("name").execute().data,
+        default=[], err_label="인력 목록 조회"
+    )
+    member_names = [m["name"] for m in members_data] if members_data else []
+
+    with st.form("add_v_form", clear_on_submit=True):
+        # 첫 번째 라인 (이름, 날짜, 구분)
+        col1, col2, col3 = st.columns(3)
+        v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
+        v_date = col2.date_input("날짜", date.today())
+        v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"])
+
+        # 두 번째 라인 (사유 + 휴가 추가 버튼을 한 줄 및 하단 정렬)
+        col_r1, col_r2 = st.columns([5, 1], vertical_alignment="bottom")
+        v_reason = col_r1.text_input("사유", "개인사유")
+        submit_clicked = col_r2.form_submit_button("휴가 추가", use_container_width=True)
+
+        if submit_clicked:
+            if v_name:
                 ok = db_query(
-                    lambda: supabase.table("role_mm").delete().eq("id", del_rm_id).execute(),
-                    default=None, err_label="직군 MM 삭제"
+                    lambda: supabase.table("vacations").insert({
+                        "name": v_name, "v_date": str(v_date), "v_type": v_type, "reason": v_reason
+                    }).execute(),
+                    default=None, err_label="휴가 저장"
                 )
                 if ok is not None:
-                    st.success("삭제되었습니다.")
+                    st.success("휴가 정보가 저장되었습니다.")
                     st.rerun()
+
+
+    st.subheader("📜 등록된 휴가 내역")
+    st.info("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
+    v_data = db_query(
+        lambda: supabase.table("vacations").select("*").order("v_date", desc=True).execute().data,
+        default=[], err_label="휴가 내역 조회"
+    )
+    if v_data:
+        df_v = pd.DataFrame(v_data)[["id", "name", "v_date", "v_type", "reason"]]
+        df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
+        st.dataframe(df_v, use_container_width=True, hide_index=True)
+
+        # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
+        col_v1, col_v2 = st.columns([1, 4])
+        del_v_id = col_v1.number_input("삭제할 휴가 ID 입력", min_value=1, step=1)
+
+        # 버튼 상단 여백 보정 후 배치
+        col_v2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if col_v2.button("휴가 삭제"):
+            ok = db_query(
+                lambda: supabase.table("vacations").delete().eq("id", del_v_id).execute(),
+                default=None, err_label="휴가 삭제"
+            )
+            if ok is not None:
+                st.success("휴가 내역이 삭제되었습니다.")
+                st.rerun()
+
+# =========================================================
+# 메뉴 3: 엑셀 데이터 입력 및 위클리 보고서 생성 (동적 분석)
+# =========================================================
+elif menu == "3. 엑셀 데이터 입력 및 위클리 리포트 생성":
+    st.title("📈 위클리 근무 공수 & 가동률 리포트 생성")
+
+    input_method = st.radio(
+        "📥 데이터 입력 방식 선택",
+        ["📋 엑셀 시트 복사해서 붙여넣기 (추천)", "📁 엑셀 파일(.xlsx) 업로드"],
+        horizontal=True
+    )
+
+    df_raw = None
+
+    if input_method == "📋 엑셀 시트 복사해서 붙여넣기 (추천)":
+        st.info("💡 엑셀 시트에서 헤더(User, 주차/일자별 컬럼, Total 등)를 포함하여 복사(Ctrl+C) 후 붙여넣기(Ctrl+V)하세요.")
+        pasted_text = st.text_area(
+            "엑셀 데이터 붙여넣기", height=180,
+            placeholder="User\t8월 1W\t8월 2W\tTotal (h)\n강민경() / 컨센트릭스\t36.16\t29.83\t66.00\n..."
+        )
+
+        if pasted_text.strip():
+            try:
+                # 엑셀 붙여넣기는 항상 탭 구분 → 탭 고정 (Sniffer 오작동 방지)
+                df_raw = pd.read_csv(io.StringIO(pasted_text.strip()), sep="\t", engine="python")
+                st.success(f"총 {len(df_raw)}명의 인력 데이터를 성공적으로 불러왔습니다.")
+            except Exception as e:
+                st.error(f"데이터 파싱 오류: {e}")
+
+    else:
+        uploaded_file = st.file_uploader("근무시간 엑셀 파일(raw_report.xlsx) 업로드", type=["xlsx", "xls"])
+        if uploaded_file is not None:
+            try:
+                excel_file = pd.ExcelFile(uploaded_file)
+                sheet_target = "Sheet1" if "Sheet1" in excel_file.sheet_names else (
+                    "Data" if "Data" in excel_file.sheet_names else excel_file.sheet_names[0])
+                df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_target)
+                st.success(f"'{sheet_target}' 시트 데이터를 성공적으로 불러왔습니다.")
+            except Exception as e:
+                st.error(f"엑셀 파일 읽기 오류: {e}")
+
+    if df_raw is not None and not df_raw.empty:
+        def clean_name(val):
+            s = str(val).strip()
+            match = re.match(r"^([가-힣a-zA-Z0-9]+)", s)
+            return match.group(1) if match else s
+
+        user_col = "User" if "User" in df_raw.columns else df_raw.columns[0]
+        df_raw["User_clean"] = df_raw[user_col].apply(clean_name)
+
+        db_members = db_query(
+            lambda: supabase.table("members").select("*").execute().data,
+            default=[], err_label="인력 정보 조회"
+        ) or []
+
+        user_mm_map = {}
+        db_role_mm_sum = {}  # members 기반 직군 MM 합 (fallback용)
+        if db_members:
+            df_db_m = pd.DataFrame(db_members)
+            df_db_m["mm"] = pd.to_numeric(df_db_m["mm"], errors="coerce").fillna(0.0)
+            db_role_mm_sum = df_db_m.groupby("role")["mm"].sum().to_dict()
+            for m in db_members:
+                user_mm_map[clean_name(m["name"])] = float(m.get("mm", 1.0))
+
+        # 2-pass 매칭기 (정확 일치 우선 → 최장 접두 fallback)
+        role_matcher = build_role_matcher(db_members, clean_name) if db_members else (lambda x: None)
+        df_raw["Role"] = df_raw["User_clean"].apply(role_matcher)
+
+        # ── 매칭 실패(미분류) 인원 처리: 경고 + '미분류' 직군으로 편입 ──
+        unmatched_mask = df_raw["Role"].isna()
+        unmatched_names = df_raw.loc[unmatched_mask, "User_clean"].tolist()
+        has_unmatched = bool(unmatched_names)
+        if has_unmatched:
+            st.warning(
+                f"⚠️ DB에 매칭되지 않은 인원 {len(unmatched_names)}명이 있습니다: "
+                f"**{', '.join(unmatched_names)}**\n\n"
+                f"→ 이 인원은 '{UNMATCHED_ROLE}' 항목으로 집계에 포함되며, MM=0으로 처리되어 가동률(%)은 '-'로 표시됩니다. "
+                f"정확한 가동률 산출을 위해 [메뉴 1]에서 해당 인원을 등록하거나 이름 표기를 맞춰주세요."
+            )
+            df_raw.loc[unmatched_mask, "Role"] = UNMATCHED_ROLE
+
+        # ── 개별 날짜 컬럼 파싱 (Data 시트 형식: 'Sat, 01 Aug 2026 (h)') ──
+        date_cols = parse_date_columns(df_raw.columns)
+
+        if not date_cols:
+            st.error(
+                "⚠️ 날짜 컬럼을 찾지 못했습니다. 'Sat, 01 Aug 2026 (h)'처럼 "
+                "개별 일자 컬럼이 포함된 데이터(Data 시트 형식)를 넣어주세요."
+            )
+            st.stop()
+
+        for col in date_cols:
+            df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce").fillna(0.0)
+
+        first_date = min(date_cols.values())
+        last_date = find_last_filled_date(df_raw, date_cols)
+        if last_date is None:
+            last_date = max(date_cols.values())
+
+        # ── 직군별 MM 결정: role_mm(시점기준) 우선, 없으면 members 합 fallback ──
+        role_mm_rows = db_query(
+            lambda: supabase.table("role_mm").select("*").execute().data,
+            default=[], err_label="직군 MM 조회"
+        ) or []
+        resolved_mm = resolve_role_mm(role_mm_rows, last_date)  # {role: mm}
+
+        if resolved_mm:
+            mm_source_label = f"직군별 MM 기준 (≤ {last_date} 최신 등록값)"
+            mm_table = pd.DataFrame(
+                [{"Role": r, "MM": resolved_mm.get(r, db_role_mm_sum.get(r, 0.0))}
+                 for r in ROLE_LIST]
+            )
+        elif db_members:
+            mm_source_label = "인력 목록 MM 합계 (직군 MM 기준 미등록)"
+            mm_table = pd.DataFrame(
+                [{"Role": r, "MM": db_role_mm_sum.get(r, 0.0)} for r in ROLE_LIST]
+            )
         else:
-            st.info("등록된 직군별 MM 기준이 없습니다. (현재는 인력 목록 MM 합계로 대체 계산됩니다)")
+            mm_source_label = "MM 정보 없음"
+            mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
 
-    # =========================================================
-    # 메뉴 2: 휴가/반차 수시 관리 (관리자 전용)
-    # =========================================================
-    elif menu == "2. 휴가/반차 수시 관리":
-        st.title("📅 휴가 / 반차 수시 일정 관리")
-        members_data = db_query(
-            lambda: supabase.table("members").select("name").execute().data,
-            default=[], err_label="인력 목록 조회"
-        )
-        member_names = [m["name"] for m in members_data] if members_data else []
-
-        with st.form("add_v_form", clear_on_submit=True):
-            # 첫 번째 라인 (이름, 날짜, 구분)
-            col1, col2, col3 = st.columns(3)
-            v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
-            v_date = col2.date_input("날짜", date.today())
-            v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"])
-
-            # 두 번째 라인 (사유 + 휴가 추가 버튼을 한 줄 및 하단 정렬)
-            col_r1, col_r2 = st.columns([5, 1], vertical_alignment="bottom")
-            v_reason = col_r1.text_input("사유", "개인사유")
-            submit_clicked = col_r2.form_submit_button("휴가 추가", use_container_width=True)
-
-            if submit_clicked:
-                if v_name:
-                    ok = db_query(
-                        lambda: supabase.table("vacations").insert({
-                            "name": v_name, "v_date": str(v_date), "v_type": v_type, "reason": v_reason
-                        }).execute(),
-                        default=None, err_label="휴가 저장"
-                    )
-                    if ok is not None:
-                        st.success("휴가 정보가 저장되었습니다.")
-                        st.rerun()
-                        
-
-        st.subheader("📜 등록된 휴가 내역")
-        st.info("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
-        v_data = db_query(
-            lambda: supabase.table("vacations").select("*").order("v_date", desc=True).execute().data,
-            default=[], err_label="휴가 내역 조회"
-        )
-        if v_data:
-            df_v = pd.DataFrame(v_data)[["id", "name", "v_date", "v_type", "reason"]]
-            df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
-            st.dataframe(df_v, use_container_width=True, hide_index=True)
-
-            # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
-            col_v1, col_v2 = st.columns([1, 4])
-            del_v_id = col_v1.number_input("삭제할 휴가 ID 입력", min_value=1, step=1)
-            
-            # 버튼 상단 여백 보정 후 배치
-            col_v2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if col_v2.button("휴가 삭제"):
-                ok = db_query(
-                    lambda: supabase.table("vacations").delete().eq("id", del_v_id).execute(),
-                    default=None, err_label="휴가 삭제"
-                )
-                if ok is not None:
-                    st.success("휴가 내역이 삭제되었습니다.")
-                    st.rerun()
-
-    # =========================================================
-    # 메뉴 3: 엑셀 데이터 입력 및 위클리 보고서 생성 (동적 분석)
-    # =========================================================
-    elif menu == "3. 엑셀 데이터 입력 및 위클리 리포트 생성":
-        st.title("📈 위클리 근무 공수 & 가동률 리포트 생성")
-
-        input_method = st.radio(
-            "📥 데이터 입력 방식 선택",
-            ["📋 엑셀 시트 복사해서 붙여넣기 (추천)", "📁 엑셀 파일(.xlsx) 업로드"],
-            horizontal=True
-        )
-
-        df_raw = None
-
-        if input_method == "📋 엑셀 시트 복사해서 붙여넣기 (추천)":
-            st.info("💡 엑셀 시트에서 헤더(User, 주차/일자별 컬럼, Total 등)를 포함하여 복사(Ctrl+C) 후 붙여넣기(Ctrl+V)하세요.")
-            pasted_text = st.text_area(
-                "엑셀 데이터 붙여넣기", height=180,
-                placeholder="User\t8월 1W\t8월 2W\tTotal (h)\n강민경() / 컨센트릭스\t36.16\t29.83\t66.00\n..."
+        # 미분류 직군 행 추가 (MM=0)
+        if has_unmatched and UNMATCHED_ROLE not in mm_table["Role"].values:
+            mm_table = pd.concat(
+                [mm_table, pd.DataFrame([{"Role": UNMATCHED_ROLE, "MM": 0.0}])],
+                ignore_index=True
             )
 
-            if pasted_text.strip():
-                try:
-                    # 엑셀 붙여넣기는 항상 탭 구분 → 탭 고정 (Sniffer 오작동 방지)
-                    df_raw = pd.read_csv(io.StringIO(pasted_text.strip()), sep="\t", engine="python")
-                    st.success(f"총 {len(df_raw)}명의 인력 데이터를 성공적으로 불러왔습니다.")
-                except Exception as e:
-                    st.error(f"데이터 파싱 오류: {e}")
+        weeks = build_weeks(first_date, last_date)          # [(주번호, s, e), ...]
+        month_networkdays = max(count_working_days(first_date, last_date), 1)
+        month_label = f"{first_date.month}월"
 
-        else:
-            uploaded_file = st.file_uploader("근무시간 엑셀 파일(raw_report.xlsx) 업로드", type=["xlsx", "xls"])
-            if uploaded_file is not None:
-                try:
-                    excel_file = pd.ExcelFile(uploaded_file)
-                    sheet_target = "Sheet1" if "Sheet1" in excel_file.sheet_names else (
-                        "Data" if "Data" in excel_file.sheet_names else excel_file.sheet_names[0])
-                    df_raw = pd.read_excel(uploaded_file, sheet_name=sheet_target)
-                    st.success(f"'{sheet_target}' 시트 데이터를 성공적으로 불러왔습니다.")
-                except Exception as e:
-                    st.error(f"엑셀 파일 읽기 오류: {e}")
+        st.caption(
+            f"📆 기간: {first_date} ~ {last_date}  |  "
+            f"근무일(공휴일 제외) {month_networkdays}일  |  {len(weeks)}개 주차  |  "
+            f"MM 기준: {mm_source_label}"
+        )
 
-        if df_raw is not None and not df_raw.empty:
-            def clean_name(val):
-                s = str(val).strip()
-                match = re.match(r"^([가-힣a-zA-Z0-9]+)", s)
-                return match.group(1) if match else s
+        # ── 각 인원의 월/주 실공수 계산 ──
+        def _sum_range(row, s, e):
+            return sum(row[c] for c, dt in date_cols.items() if s <= dt <= e)
 
-            user_col = "User" if "User" in df_raw.columns else df_raw.columns[0]
-            df_raw["User_clean"] = df_raw[user_col].apply(clean_name)
+        df_raw["월실공수"] = df_raw.apply(lambda r: _sum_range(r, first_date, last_date), axis=1)
+        week_val_cols = []
+        for wn, s, e in weeks:
+            col = f"__W{wn}__"
+            df_raw[col] = df_raw.apply(lambda r, s=s, e=e: _sum_range(r, s, e), axis=1)
+            week_val_cols.append((wn, col, s, e))
 
-            db_members = db_query(
-                lambda: supabase.table("members").select("*").execute().data,
-                default=[], err_label="인력 정보 조회"
-            ) or []
+        # ── 휴가(연차) 로드 → 분모 차감맵 (MM 가중, 월/주 배분) ──
+        vac_data = db_query(
+            lambda: supabase.table("vacations").select("*").execute().data,
+            default=[], err_label="휴가 정보 조회"
+        ) or []
+        vac_map = compute_vacation_map(
+            vac_data, clean_name, user_mm_map, first_date, last_date, weeks
+        )
 
-            user_mm_map = {}
-            db_role_mm_sum = {}  # members 기반 직군 MM 합 (fallback용)
-            if db_members:
-                df_db_m = pd.DataFrame(db_members)
-                df_db_m["mm"] = pd.to_numeric(df_db_m["mm"], errors="coerce").fillna(0.0)
-                db_role_mm_sum = df_db_m.groupby("role")["mm"].sum().to_dict()
-                for m in db_members:
-                    user_mm_map[clean_name(m["name"])] = float(m.get("mm", 1.0))
+        # 직군별 휴가 합산 (분모 차감용)
+        role_vac_month = {}
+        role_vac_week = {}
+        for _, r in df_raw.iterrows():
+            u = r["User_clean"]
+            rl = r["Role"]
+            if u in vac_map and rl:
+                role_vac_month[rl] = role_vac_month.get(rl, 0.0) + vac_map[u]["month"]
+                for wn, _c, _s, _e in week_val_cols:
+                    if wn in vac_map[u]:
+                        role_vac_week.setdefault(rl, {}).setdefault(wn, 0.0)
+                        role_vac_week[rl][wn] += vac_map[u][wn]
 
-            # 2-pass 매칭기 (정확 일치 우선 → 최장 접두 fallback)
-            role_matcher = build_role_matcher(db_members, clean_name) if db_members else (lambda x: None)
-            df_raw["Role"] = df_raw["User_clean"].apply(role_matcher)
+        # ── 직군별 집계 ──
+        agg_cols = ["월실공수"] + [c for _wn, c, _s, _e in week_val_cols]
+        role_sum = df_raw.groupby("Role")[agg_cols].sum().reset_index()
+        report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
 
-            # ── 매칭 실패(미분류) 인원 처리: 경고 + '미분류' 직군으로 편입 ──
-            unmatched_mask = df_raw["Role"].isna()
-            unmatched_names = df_raw.loc[unmatched_mask, "User_clean"].tolist()
-            has_unmatched = bool(unmatched_names)
-            if has_unmatched:
-                st.warning(
-                    f"⚠️ DB에 매칭되지 않은 인원 {len(unmatched_names)}명이 있습니다: "
-                    f"**{', '.join(unmatched_names)}**\n\n"
-                    f"→ 이 인원은 '{UNMATCHED_ROLE}' 항목으로 집계에 포함되며, MM=0으로 처리되어 가동률(%)은 '-'로 표시됩니다. "
-                    f"정확한 가동률 산출을 위해 [메뉴 1]에서 해당 인원을 등록하거나 이름 표기를 맞춰주세요."
-                )
-                df_raw.loc[unmatched_mask, "Role"] = UNMATCHED_ROLE
-
-            # ── 개별 날짜 컬럼 파싱 (Data 시트 형식: 'Sat, 01 Aug 2026 (h)') ──
-            date_cols = parse_date_columns(df_raw.columns)
-
-            if not date_cols:
-                st.error(
-                    "⚠️ 날짜 컬럼을 찾지 못했습니다. 'Sat, 01 Aug 2026 (h)'처럼 "
-                    "개별 일자 컬럼이 포함된 데이터(Data 시트 형식)를 넣어주세요."
-                )
-                st.stop()
-
-            for col in date_cols:
-                df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce").fillna(0.0)
-
-            first_date = min(date_cols.values())
-            last_date = find_last_filled_date(df_raw, date_cols)
-            if last_date is None:
-                last_date = max(date_cols.values())
-
-            # ── 직군별 MM 결정: role_mm(시점기준) 우선, 없으면 members 합 fallback ──
-            role_mm_rows = db_query(
-                lambda: supabase.table("role_mm").select("*").execute().data,
-                default=[], err_label="직군 MM 조회"
-            ) or []
-            resolved_mm = resolve_role_mm(role_mm_rows, last_date)  # {role: mm}
-
-            if resolved_mm:
-                mm_source_label = f"직군별 MM 기준 (≤ {last_date} 최신 등록값)"
-                mm_table = pd.DataFrame(
-                    [{"Role": r, "MM": resolved_mm.get(r, db_role_mm_sum.get(r, 0.0))}
-                     for r in ROLE_LIST]
-                )
-            elif db_members:
-                mm_source_label = "인력 목록 MM 합계 (직군 MM 기준 미등록)"
-                mm_table = pd.DataFrame(
-                    [{"Role": r, "MM": db_role_mm_sum.get(r, 0.0)} for r in ROLE_LIST]
-                )
+        def get_status(rate_num, mm):
+            if mm == 0:
+                return "-"
+            if rate_num < 80:
+                return "여유"
+            elif rate_num <= 120:
+                return "적정"
             else:
-                mm_source_label = "MM 정보 없음"
-                mm_table = pd.DataFrame([{"Role": r, "MM": 0.0} for r in ROLE_LIST])
+                return "초과"
 
-            # 미분류 직군 행 추가 (MM=0)
-            if has_unmatched and UNMATCHED_ROLE not in mm_table["Role"].values:
-                mm_table = pd.concat(
-                    [mm_table, pd.DataFrame([{"Role": UNMATCHED_ROLE, "MM": 0.0}])],
-                    ignore_index=True
-                )
+        # ── 월 목표 공수 (안 B: 8×MM×근무일 − 월휴가) & 월 가동률 ──
+        def _month_target(r):
+            mm = r["MM"]
+            if mm <= 0:
+                return 0.0
+            return max(8.0 * mm * month_networkdays - role_vac_month.get(r["Role"], 0.0), 0.0)
 
-            weeks = build_weeks(first_date, last_date)          # [(주번호, s, e), ...]
-            month_networkdays = max(count_working_days(first_date, last_date), 1)
-            month_label = f"{first_date.month}월"
+        report_df["월목표공수"] = report_df.apply(_month_target, axis=1)
 
-            st.caption(
-                f"📆 기간: {first_date} ~ {last_date}  |  "
-                f"근무일(공휴일 제외) {month_networkdays}일  |  {len(weeks)}개 주차  |  "
-                f"MM 기준: {mm_source_label}"
-            )
+        def _month_rate_num(r):
+            if r["MM"] <= 0:
+                return 0
+            den = r["월목표공수"]
+            return round(r["월실공수"] / den * 100) if den > 0 else 0
 
-            # ── 각 인원의 월/주 실공수 계산 ──
-            def _sum_range(row, s, e):
-                return sum(row[c] for c, dt in date_cols.items() if s <= dt <= e)
+        report_df["월 누적 가동률_num"] = report_df.apply(_month_rate_num, axis=1)
+        report_df["월 누적 가동률(%)"] = report_df.apply(
+            lambda r: f"{int(r['월 누적 가동률_num'])}%" if r["MM"] > 0 else "-", axis=1
+        )
 
-            df_raw["월실공수"] = df_raw.apply(lambda r: _sum_range(r, first_date, last_date), axis=1)
-            week_val_cols = []
-            for wn, s, e in weeks:
-                col = f"__W{wn}__"
-                df_raw[col] = df_raw.apply(lambda r, s=s, e=e: _sum_range(r, s, e), axis=1)
-                week_val_cols.append((wn, col, s, e))
+        # ── 주차별 가동률 (분모: 8×MM×그주근무일 − 그주휴가) ──
+        calculated_week_cols = []
+        week_meta = []  # (표시컬럼명, 값컬럼, 주번호, s, e, 근무일)
+        for wn, vcol, s, e in week_val_cols:
+            wd = max(count_working_days(s, e), 1)
+            disp = f"{first_date.month}월 {wn}W"
 
-            # ── 휴가(연차) 로드 → 분모 차감맵 (MM 가중, 월/주 배분) ──
-            vac_data = db_query(
-                lambda: supabase.table("vacations").select("*").execute().data,
-                default=[], err_label="휴가 정보 조회"
-            ) or []
-            vac_map = compute_vacation_map(
-                vac_data, clean_name, user_mm_map, first_date, last_date, weeks
-            )
-
-            # 직군별 휴가 합산 (분모 차감용)
-            role_vac_month = {}
-            role_vac_week = {}
-            for _, r in df_raw.iterrows():
-                u = r["User_clean"]
-                rl = r["Role"]
-                if u in vac_map and rl:
-                    role_vac_month[rl] = role_vac_month.get(rl, 0.0) + vac_map[u]["month"]
-                    for wn, _c, _s, _e in week_val_cols:
-                        if wn in vac_map[u]:
-                            role_vac_week.setdefault(rl, {}).setdefault(wn, 0.0)
-                            role_vac_week[rl][wn] += vac_map[u][wn]
-
-            # ── 직군별 집계 ──
-            agg_cols = ["월실공수"] + [c for _wn, c, _s, _e in week_val_cols]
-            role_sum = df_raw.groupby("Role")[agg_cols].sum().reset_index()
-            report_df = pd.merge(mm_table, role_sum, on="Role", how="left").fillna(0.0)
-
-            def get_status(rate_num, mm):
-                if mm == 0:
-                    return "-"
-                if rate_num < 80:
-                    return "여유"
-                elif rate_num <= 120:
-                    return "적정"
-                else:
-                    return "초과"
-
-            # ── 월 목표 공수 (안 B: 8×MM×근무일 − 월휴가) & 월 가동률 ──
-            def _month_target(r):
+            def _wrate(r, vcol=vcol, wd=wd, wn=wn):
                 mm = r["MM"]
                 if mm <= 0:
-                    return 0.0
-                return max(8.0 * mm * month_networkdays - role_vac_month.get(r["Role"], 0.0), 0.0)
+                    return "-"
+                den = 8.0 * mm * wd - role_vac_week.get(r["Role"], {}).get(wn, 0.0)
+                return f"{round(r[vcol] / den * 100)}%" if den > 0 else "-"
 
-            report_df["월목표공수"] = report_df.apply(_month_target, axis=1)
+            report_df[disp] = report_df.apply(_wrate, axis=1)
+            calculated_week_cols.append(disp)
+            week_meta.append((disp, vcol, wn, s, e, wd))
 
-            def _month_rate_num(r):
-                if r["MM"] <= 0:
-                    return 0
-                den = r["월목표공수"]
-                return round(r["월실공수"] / den * 100) if den > 0 else 0
-
-            report_df["월 누적 가동률_num"] = report_df.apply(_month_rate_num, axis=1)
-            report_df["월 누적 가동률(%)"] = report_df.apply(
-                lambda r: f"{int(r['월 누적 가동률_num'])}%" if r["MM"] > 0 else "-", axis=1
-            )
-
-            # ── 주차별 가동률 (분모: 8×MM×그주근무일 − 그주휴가) ──
-            calculated_week_cols = []
-            week_meta = []  # (표시컬럼명, 값컬럼, 주번호, s, e, 근무일)
-            for wn, vcol, s, e in week_val_cols:
-                wd = max(count_working_days(s, e), 1)
-                disp = f"{first_date.month}월 {wn}W"
-
-                def _wrate(r, vcol=vcol, wd=wd, wn=wn):
-                    mm = r["MM"]
-                    if mm <= 0:
-                        return "-"
-                    den = 8.0 * mm * wd - role_vac_week.get(r["Role"], {}).get(wn, 0.0)
-                    return f"{round(r[vcol] / den * 100)}%" if den > 0 else "-"
-
-                report_df[disp] = report_df.apply(_wrate, axis=1)
-                calculated_week_cols.append(disp)
-                week_meta.append((disp, vcol, wn, s, e, wd))
-
-            report_df["판단"] = report_df.apply(
-                lambda r: get_status(r["월 누적 가동률_num"], r["MM"]), axis=1
-            )
-
-            # ── 표 구성: MM | 구분 | 월 목표공수 | 누적 실공수 | 월 가동률 | 판단 | 주차들 ──
-            month_col = f"{month_label} 가동률(%)"
-            report_df[month_col] = report_df["월 누적 가동률(%)"]
-
-            final_cols = (
-                ["Role", "MM", "월목표공수", "월실공수", month_col]
-                + calculated_week_cols
-                + ["판단"]
-            )
-            display_df = report_df[final_cols].copy()
-            display_df.rename(columns={
-                "Role": "구분",
-                "월목표공수": "월 목표공수(h)",
-                "월실공수": "누적 실공수(h)",
-            }, inplace=True)
-
-            # ── Total 행 ──
-            total_mm = report_df["MM"].sum()
-            total_actual = report_df["월실공수"].sum()
-            total_target = report_df["월목표공수"].sum()
-            total_month_rate = round(total_actual / total_target * 100) if total_target > 0 else 0
-
-            total_dict = {
-                "구분": "Total",
-                "MM": total_mm,
-                "월 목표공수(h)": round(total_target, 1),
-                "누적 실공수(h)": round(total_actual, 1),
-                month_col: f"{total_month_rate}%" if total_mm > 0 else "-",
-            }
-            for disp, vcol, wn, s, e, wd in week_meta:
-                w_sum = report_df[vcol].sum()
-                w_vac = sum(role_vac_week.get(rl, {}).get(wn, 0.0) for rl in role_vac_week)
-                w_den = 8.0 * total_mm * wd - w_vac
-                total_dict[disp] = f"{round(w_sum / w_den * 100)}%" if w_den > 0 else "-"
-
-            total_dict["판단"] = get_status(total_month_rate, total_mm)
-
-            total_row = pd.DataFrame([total_dict])
-            # Total 행을 맨 위로 + 컬럼 순서를 display_df와 동일하게 고정
-            final_view = pd.concat([total_row, display_df], ignore_index=True)
-            final_view = final_view[display_df.columns.tolist()]
-
-            # ── 써머리(구간별 집계): 초과/적정/여유 구간의 MM 합 & 평균 가동률 ──
-            calc_df = report_df[report_df["MM"] > 0].copy()  # MM 있는 직군만
-            seg_summary = []
-            # Total 행
-            seg_summary.append({
-                "구분": "Total",
-                "MM": round(total_mm, 2),
-                "월 가동률(평균)": f"{total_month_rate}%",
-            })
-            for seg in ["초과", "적정", "여유"]:
-                sub = calc_df[calc_df["판단"] == seg]
-                if len(sub) > 0:
-                    seg_mm = round(sub["MM"].sum(), 2)
-                    seg_avg = round(sub["월 누적 가동률_num"].mean())
-                    seg_summary.append({
-                        "구분": seg,
-                        "MM": seg_mm,
-                        "월 가동률(평균)": f"{seg_avg}%",
-                    })
-                else:
-                    seg_summary.append({"구분": seg, "MM": 0.0, "월 가동률(평균)": "-"})
-            summary_df = pd.DataFrame(seg_summary)
-
-            st.markdown("---")
-            st.subheader("📊 위클리 보고 리포트")
-
-            # ── 상단 써머리 영역 (좌: 구간요약표 / 우: 산정기준) ──
-            sum_left, sum_right = st.columns([1, 1])
-            with sum_left:
-                st.markdown("##### 📌 가동률 요약")
-                st.dataframe(
-                    summary_df.style.map(highlight_status, subset=["구분"]).format({"MM": "{:.2f}"}),
-                    use_container_width=True, hide_index=True
-                )
-            with sum_right:
-                st.markdown("##### 📌 가동률 산정 기준")
-                st.markdown(
-                    """
-<div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
-<b>가동률</b> = 실공수시간 ÷ 목표공수시간 × 100<br><br>
-<b>목표공수</b> : [8시간 × M/M × 해당 기간 Working Day − 비가동시간]<br><br>
-<b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
-<span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
-</div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            st.markdown("")  # 간격
-
-            # ── 특이사항 입력 ──
-            special_note = st.text_area(
-                "📝 특이사항 (선택) — 해당 월 특이사항을 작성하면 리포트에 함께 저장됩니다.",
-                value="", height=100, placeholder="예) 8월 3주차 전사 워크샵으로 가동률 일시 하락 등"
-            )
-
-            # ── 본 리포트 표 ──
-            st.dataframe(
-                final_view.style.map(highlight_status, subset=["판단"]).format({
-                    "MM": "{:.2f}",
-                    "월 목표공수(h)": "{:,.1f}h",
-                    "누적 실공수(h)": "{:,.1f}h"
-                }),
-                use_container_width=True,
-                height=680
-            )
-
-            default_report_title = (
-                f"{first_date.year}년 {first_date.month}월 위클리 가동률 보고서 "
-                f"({len(weeks)}주차, ~{last_date.strftime('%m/%d')})"
-            )
-            report_name = st.text_input("보고서 저장 명칭", value=default_report_title)
-
-            save_disabled = has_unmatched
-            if has_unmatched:
-                st.caption("⚠️ 미분류 인원이 있는 상태에서도 저장은 가능하지만, 가동률 정확도를 위해 먼저 인력 등록을 권장합니다.")
-
-            if st.button("💾 이 위클리 보고서 DB에 저장하기"):
-                json_data = final_view.to_json(orient="records", force_ascii=False)
-                summary_json = summary_df.to_json(orient="records", force_ascii=False)
-                ok = db_query(
-                    lambda: supabase.table("reports").insert({
-                        "report_title": report_name,
-                        "total_mm": float(total_mm),
-                        "total_hours": float(total_actual),
-                        "excel_data": json.loads(json_data),
-                        "summary_data": json.loads(summary_json),
-                        "special_note": special_note,
-                    }).execute(),
-                    default=None, err_label="보고서 저장"
-                )
-                if ok is not None:
-                    st.success(f"'{report_name}'가 DB에 성공적으로 저장되었습니다!")
-
-    # =========================================================
-    # 메뉴 4: 과거 보고서 조회
-    # =========================================================
-    elif menu == "4. 과거 보고서 저장 이력 조회":
-        st.title("📂 저장된 위클리 보고서 이력 조회")
-        reports_data = db_query(
-            lambda: supabase.table("reports").select(
-                "id, report_title, total_mm, total_hours, created_at"
-            ).order("created_at", desc=True).execute().data,
-            default=[], err_label="보고서 이력 조회"
+        report_df["판단"] = report_df.apply(
+            lambda r: get_status(r["월 누적 가동률_num"], r["MM"]), axis=1
         )
 
-        if reports_data:
-            df_r = pd.DataFrame(reports_data)
-            df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
-            st.dataframe(df_r, use_container_width=True, hide_index=True)
+        # ── 표 구성: MM | 구분 | 월 목표공수 | 누적 실공수 | 월 가동률 | 판단 | 주차들 ──
+        month_col = f"{month_label} 가동률(%)"
+        report_df[month_col] = report_df["월 누적 가동률(%)"]
 
-            # ── [추가] 관리자 전용 보고서 삭제 영역 (표 바로 아래) ──
-            if st.session_state.user_role == "admin":
-                col_del1, col_del2 = st.columns([1, 4], vertical_alignment="bottom")
-                del_report_id = col_del1.number_input("삭제할 보고서 ID 입력", min_value=1, step=1, key="del_rep_id")
-                if col_del2.button("보고서 삭제", key="btn_del_rep"):
-                    ok = db_query(
-                        lambda: supabase.table("reports").delete().eq("id", del_report_id).execute(),
-                        default=None,
-                        err_label="보고서 삭제"
-                    )
-                    if ok is not None:
-                        st.success(f"ID {del_report_id}번 보고서가 삭제되었습니다.")
-                        st.rerun()
+        final_cols = (
+            ["Role", "MM", "월목표공수", "월실공수", month_col]
+            + calculated_week_cols
+            + ["판단"]
+        )
+        display_df = report_df[final_cols].copy()
+        display_df.rename(columns={
+            "Role": "구분",
+            "월목표공수": "월 목표공수(h)",
+            "월실공수": "누적 실공수(h)",
+        }, inplace=True)
 
-            report_options = {
-                f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
-                for r in reports_data
-            }
+        # ── Total 행 ──
+        total_mm = report_df["MM"].sum()
+        total_actual = report_df["월실공수"].sum()
+        total_target = report_df["월목표공수"].sum()
+        total_month_rate = round(total_actual / total_target * 100) if total_target > 0 else 0
 
-            selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
-            selected_id = report_options[selected_label]
+        total_dict = {
+            "구분": "Total",
+            "MM": total_mm,
+            "월 목표공수(h)": round(total_target, 1),
+            "누적 실공수(h)": round(total_actual, 1),
+            month_col: f"{total_month_rate}%" if total_mm > 0 else "-",
+        }
+        for disp, vcol, wn, s, e, wd in week_meta:
+            w_sum = report_df[vcol].sum()
+            w_vac = sum(role_vac_week.get(rl, {}).get(wn, 0.0) for rl in role_vac_week)
+            w_den = 8.0 * total_mm * wd - w_vac
+            total_dict[disp] = f"{round(w_sum / w_den * 100)}%" if w_den > 0 else "-"
 
-            if st.button("보고서 불러오기"):
-                detail_list = db_query(
-                    lambda: supabase.table("reports").select("*").eq("id", selected_id).execute().data,
-                    default=[], err_label="보고서 상세 조회"
-                )
-                if detail_list:
-                    detail = detail_list[0]
-                    st.subheader(f"📄 {detail['report_title']} 상세 내용")
+        total_dict["판단"] = get_status(total_month_rate, total_mm)
 
-                    df_detail = pd.DataFrame(detail["excel_data"])
+        total_row = pd.DataFrame([total_dict])
+        # Total 행을 맨 위로 + 컬럼 순서를 display_df와 동일하게 고정
+        final_view = pd.concat([total_row, display_df], ignore_index=True)
+        final_view = final_view[display_df.columns.tolist()]
 
-                    # 옛/새 컬럼명 모두 지원 (과거 저장분 호환)
-                    hours_col = None
-                    for cand in ["누적 실공수(h)", "월간 누적 실공수(h)"]:
-                        if cand in df_detail.columns:
-                            hours_col = cand
-                            break
-                    target_col = "월 목표공수(h)" if "월 목표공수(h)" in df_detail.columns else None
+        # ── 써머리(구간별 집계): 초과/적정/여유 구간의 MM 합 & 평균 가동률 ──
+        calc_df = report_df[report_df["MM"] > 0].copy()  # MM 있는 직군만
+        seg_summary = []
+        # Total 행
+        seg_summary.append({
+            "구분": "Total",
+            "MM": round(total_mm, 2),
+            "월 가동률(평균)": f"{total_month_rate}%",
+        })
+        for seg in ["초과", "적정", "여유"]:
+            sub = calc_df[calc_df["판단"] == seg]
+            if len(sub) > 0:
+                seg_mm = round(sub["MM"].sum(), 2)
+                seg_avg = round(sub["월 누적 가동률_num"].mean())
+                seg_summary.append({
+                    "구분": seg,
+                    "MM": seg_mm,
+                    "월 가동률(평균)": f"{seg_avg}%",
+                })
+            else:
+                seg_summary.append({"구분": seg, "MM": 0.0, "월 가동률(평균)": "-"})
+        summary_df = pd.DataFrame(seg_summary)
 
-                    if "MM" in df_detail.columns:
-                        df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
-                    if hours_col:
-                        df_detail[hours_col] = pd.to_numeric(
-                            df_detail[hours_col], errors="coerce").fillna(0.0)
-                    if target_col:
-                        df_detail[target_col] = pd.to_numeric(
-                            df_detail[target_col], errors="coerce").fillna(0.0)
+        st.markdown("---")
+        st.subheader("📊 위클리 보고 리포트")
 
-                    # ── 컬럼 순서를 메뉴3과 동일하게 재정렬 ──
-                    #   구분 | MM | 월 목표공수 | 누적 실공수 | 월 가동률 | 주차들 | 판단
-                    cols_now = list(df_detail.columns)
-                    week_cols_d = [c for c in cols_now if re.search(r"\d+\s*W", str(c))]
-                    rate_cols_d = [c for c in cols_now
-                                   if "가동률" in str(c) and "월" in str(c) and c not in week_cols_d]
-                    lead = [c for c in ["구분", "MM"] if c in cols_now]
-                    mid = [c for c in [target_col, hours_col] if c] + rate_cols_d
-                    tail = [c for c in ["판단"] if c in cols_now]
-                    ordered = lead + mid + week_cols_d + tail
-                    # 빠진 컬럼 있으면 뒤에 붙임 (안전)
-                    ordered += [c for c in cols_now if c not in ordered]
-                    df_detail = df_detail[ordered]
-
-                    st_view = df_detail.style
-                    if "판단" in df_detail.columns:
-                        st_view = st_view.map(highlight_status, subset=["판단"])
-
-                    format_dict = {}
-                    if "MM" in df_detail.columns:
-                        format_dict["MM"] = "{:.2f}"
-                    if hours_col:
-                        format_dict[hours_col] = "{:,.1f}h"
-                    if target_col:
-                        format_dict[target_col] = "{:,.1f}h"
-
-                    if format_dict:
-                        st_view = st_view.format(format_dict)
-
-                    # ── 써머리 & 특이사항 (있으면 표시) ──
-                    summary_data = detail.get("summary_data")
-                    if summary_data:
-                        try:
-                            df_sum = pd.DataFrame(summary_data)
-                            # 컬럼 순서 고정: 구분 | MM | 월 가동률(평균)
-                            desired = [c for c in ["구분", "MM", "월 가동률(평균)"] if c in df_sum.columns]
-                            desired += [c for c in df_sum.columns if c not in desired]
-                            df_sum = df_sum[desired]
-                            sc_left, sc_right = st.columns([1, 1])
-                            with sc_left:
-                                st.markdown("##### 📌 가동률 요약")
-                                sv = df_sum.style
-                                if "구분" in df_sum.columns:
-                                    sv = sv.map(highlight_status, subset=["구분"])
-                                if "MM" in df_sum.columns:
-                                    df_sum["MM"] = pd.to_numeric(df_sum["MM"], errors="coerce").fillna(0.0)
-                                    sv = sv.format({"MM": "{:.2f}"})
-                                st.dataframe(sv, use_container_width=True, hide_index=True)
-                            with sc_right:
-                                st.markdown("##### 📌 가동률 산정 기준")
-                                st.markdown(
-                                    """
+        # ── 상단 써머리 영역 (좌: 구간요약표 / 우: 산정기준) ──
+        sum_left, sum_right = st.columns([1, 1])
+        with sum_left:
+            st.markdown("##### 📌 가동률 요약")
+            st.dataframe(
+                summary_df.style.map(highlight_status, subset=["구분"]).format({"MM": "{:.2f}"}),
+                use_container_width=True, hide_index=True
+            )
+        with sum_right:
+            st.markdown("##### 📌 가동률 산정 기준")
+            st.markdown(
+                """
 <div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
 <b>가동률</b> = 실공수시간 ÷ 목표공수시간 × 100<br><br>
 <b>목표공수</b> : [8시간 × M/M × 해당 기간 Working Day − 비가동시간]<br><br>
 <b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
 <span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
 </div>
-                                    """,
-                                    unsafe_allow_html=True,
-                                )
-                        except Exception:
-                            pass
+                """,
+                unsafe_allow_html=True,
+            )
 
-                    special_note_saved = detail.get("special_note")
-                    if special_note_saved:
-                        st.info(f"📝 특이사항: {special_note_saved}")
+        st.markdown("")  # 간격
 
-                    st.dataframe(st_view, use_container_width=True, height=680)
+        # ── 특이사항 입력 ──
+        special_note = st.text_area(
+            "📝 특이사항 (선택) — 해당 월 특이사항을 작성하면 리포트에 함께 저장됩니다.",
+            value="", height=100, placeholder="예) 8월 3주차 전사 워크샵으로 가동률 일시 하락 등"
+        )
 
-                    # ── PDF 다운로드 ──
-                    st.markdown("---")
-                    try:
-                        pdf_columns = list(df_detail.columns)
-                        pdf_rows = df_detail.to_dict(orient="records")
-                        # 값 문자열화 (MM/실공수 포맷 유지)
-                        for r in pdf_rows:
-                            for k, v in list(r.items()):
-                                if k == "MM" and isinstance(v, (int, float)):
-                                    r[k] = f"{v:.2f}"
-                                elif hours_col and k == hours_col and isinstance(v, (int, float)):
-                                    r[k] = f"{v:,.1f}h"
-                                elif v is None:
-                                    r[k] = ""
-                                else:
-                                    r[k] = str(v)
+        # ── 본 리포트 표 ──
+        st.dataframe(
+            final_view.style.map(highlight_status, subset=["판단"]).format({
+                "MM": "{:.2f}",
+                "월 목표공수(h)": "{:,.1f}h",
+                "누적 실공수(h)": "{:,.1f}h"
+            }),
+            use_container_width=True,
+            height=680
+        )
 
-                        # 메타 구성
-                        total_row_data = next(
-                            (r for r in pdf_rows if r.get("구분") == "Total"), {})
-                        pdf_meta = {
-                            "생성일": str(detail.get("created_at", ""))[:10],
-                            "총 MM": f"{detail.get('total_mm', 0):.2f}",
-                            "총 실공수": f"{detail.get('total_hours', 0):,.1f}h",
-                        }
-                        # Total 가동률 (월 컬럼에서 추출)
-                        month_col_name = next(
-                            (c for c in pdf_columns if "가동률" in c and "월" in c), None)
-                        if month_col_name and total_row_data:
-                            pdf_meta["Total 가동률"] = total_row_data.get(month_col_name, "")
+        # ── 범례 (PDF와 동일) ──
+        st.markdown(LEGEND_HTML, unsafe_allow_html=True)
 
-                        # 특이사항
-                        if detail.get("special_note"):
-                            pdf_meta["특이사항"] = detail["special_note"]
+        default_report_title = (
+            f"{first_date.year}년 {first_date.month}월 위클리 가동률 보고서 "
+            f"({len(weeks)}주차, ~{last_date.strftime('%m/%d')})"
+        )
+        report_name = st.text_input("보고서 저장 명칭", value=default_report_title)
 
-                        # 가동률 요약(구간별) — 저장된 summary_data 사용
-                        if detail.get("summary_data"):
-                            sd = detail["summary_data"]
-                            # 컬럼 순서 정규화
-                            norm = []
-                            for row in sd:
-                                norm.append({
-                                    "구분": row.get("구분", ""),
-                                    "MM": row.get("MM", ""),
-                                    "월 가동률(평균)": row.get("월 가동률(평균)", ""),
-                                })
-                            pdf_meta["summary_rows"] = norm
+        save_disabled = has_unmatched
+        if has_unmatched:
+            st.caption("⚠️ 미분류 인원이 있는 상태에서도 저장은 가능하지만, 가동률 정확도를 위해 먼저 인력 등록을 권장합니다.")
 
-                        pdf_bytes = build_report_pdf(
-                            detail["report_title"], pdf_rows, pdf_columns, pdf_meta
+        if st.button("💾 이 위클리 보고서 DB에 저장하기"):
+            json_data = final_view.to_json(orient="records", force_ascii=False)
+            summary_json = summary_df.to_json(orient="records", force_ascii=False)
+            ok = db_query(
+                lambda: supabase.table("reports").insert({
+                    "report_title": report_name,
+                    "total_mm": float(total_mm),
+                    "total_hours": float(total_actual),
+                    "excel_data": json.loads(json_data),
+                    "summary_data": json.loads(summary_json),
+                    "special_note": special_note,
+                }).execute(),
+                default=None, err_label="보고서 저장"
+            )
+            if ok is not None:
+                st.success(f"'{report_name}'가 DB에 성공적으로 저장되었습니다!")
+
+# =========================================================
+# 메뉴 4: 과거 보고서 조회
+# =========================================================
+elif menu == "4. 과거 보고서 저장 이력 조회":
+    st.title("📂 저장된 위클리 보고서 이력 조회")
+    reports_data = db_query(
+        lambda: supabase.table("reports").select(
+            "id, report_title, total_mm, total_hours, created_at"
+        ).order("created_at", desc=True).execute().data,
+        default=[], err_label="보고서 이력 조회"
+    )
+
+    if reports_data:
+        df_r = pd.DataFrame(reports_data)
+        df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
+        st.dataframe(df_r, use_container_width=True, hide_index=True)
+
+        # ── [추가] 관리자 전용 보고서 삭제 영역 (표 바로 아래) ──
+        if st.session_state.user_role == "admin":
+            col_del1, col_del2 = st.columns([1, 4], vertical_alignment="bottom")
+            del_report_id = col_del1.number_input("삭제할 보고서 ID 입력", min_value=1, step=1, key="del_rep_id")
+            if col_del2.button("보고서 삭제", key="btn_del_rep"):
+                ok = db_query(
+                    lambda: supabase.table("reports").delete().eq("id", del_report_id).execute(),
+                    default=None,
+                    err_label="보고서 삭제"
+                )
+                if ok is not None:
+                    st.success(f"ID {del_report_id}번 보고서가 삭제되었습니다.")
+                    st.rerun()
+
+        report_options = {
+            f"[{r['id']}] {r['report_title']} ({str(r['created_at'])[:16]})": r['id']
+            for r in reports_data
+        }
+
+        # selectbox 기본값은 맨 위(최신) → 진입 시 자동으로 최신 보고서가 선택됨
+        selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
+        selected_id = report_options[selected_label]
+
+        # 버튼은 유지(수동 새로고침 용도)하되, 선택만 바꿔도 아래 상세가 바로 표시됨
+        st.button("보고서 불러오기")
+
+        detail_list = db_query(
+            lambda: supabase.table("reports").select("*").eq("id", selected_id).execute().data,
+            default=[], err_label="보고서 상세 조회"
+        )
+        if detail_list:
+            detail = detail_list[0]
+            st.subheader(f"📄 {detail['report_title']} 상세 내용")
+
+            df_detail = pd.DataFrame(detail["excel_data"])
+
+            # 옛/새 컬럼명 모두 지원 (과거 저장분 호환)
+            hours_col = None
+            for cand in ["누적 실공수(h)", "월간 누적 실공수(h)"]:
+                if cand in df_detail.columns:
+                    hours_col = cand
+                    break
+            target_col = "월 목표공수(h)" if "월 목표공수(h)" in df_detail.columns else None
+
+            if "MM" in df_detail.columns:
+                df_detail["MM"] = pd.to_numeric(df_detail["MM"], errors="coerce").fillna(0.0)
+            if hours_col:
+                df_detail[hours_col] = pd.to_numeric(
+                    df_detail[hours_col], errors="coerce").fillna(0.0)
+            if target_col:
+                df_detail[target_col] = pd.to_numeric(
+                    df_detail[target_col], errors="coerce").fillna(0.0)
+
+            # ── 컬럼 순서를 메뉴3과 동일하게 재정렬 ──
+            #   구분 | MM | 월 목표공수 | 누적 실공수 | 월 가동률 | 주차들 | 판단
+            cols_now = list(df_detail.columns)
+            week_cols_d = [c for c in cols_now if re.search(r"\d+\s*W", str(c))]
+            rate_cols_d = [c for c in cols_now
+                           if "가동률" in str(c) and "월" in str(c) and c not in week_cols_d]
+            lead = [c for c in ["구분", "MM"] if c in cols_now]
+            mid = [c for c in [target_col, hours_col] if c] + rate_cols_d
+            tail = [c for c in ["판단"] if c in cols_now]
+            ordered = lead + mid + week_cols_d + tail
+            # 빠진 컬럼 있으면 뒤에 붙임 (안전)
+            ordered += [c for c in cols_now if c not in ordered]
+            df_detail = df_detail[ordered]
+
+            st_view = df_detail.style
+            if "판단" in df_detail.columns:
+                st_view = st_view.map(highlight_status, subset=["판단"])
+
+            format_dict = {}
+            if "MM" in df_detail.columns:
+                format_dict["MM"] = "{:.2f}"
+            if hours_col:
+                format_dict[hours_col] = "{:,.1f}h"
+            if target_col:
+                format_dict[target_col] = "{:,.1f}h"
+
+            if format_dict:
+                st_view = st_view.format(format_dict)
+
+            # ── 써머리 & 특이사항 (있으면 표시) ──
+            summary_data = detail.get("summary_data")
+            if summary_data:
+                try:
+                    df_sum = pd.DataFrame(summary_data)
+                    # 컬럼 순서 고정: 구분 | MM | 월 가동률(평균)
+                    desired = [c for c in ["구분", "MM", "월 가동률(평균)"] if c in df_sum.columns]
+                    desired += [c for c in df_sum.columns if c not in desired]
+                    df_sum = df_sum[desired]
+                    sc_left, sc_right = st.columns([1, 1])
+                    with sc_left:
+                        st.markdown("##### 📌 가동률 요약")
+                        sv = df_sum.style
+                        if "구분" in df_sum.columns:
+                            sv = sv.map(highlight_status, subset=["구분"])
+                        if "MM" in df_sum.columns:
+                            df_sum["MM"] = pd.to_numeric(df_sum["MM"], errors="coerce").fillna(0.0)
+                            sv = sv.format({"MM": "{:.2f}"})
+                        st.dataframe(sv, use_container_width=True, hide_index=True)
+                    with sc_right:
+                        st.markdown("##### 📌 가동률 산정 기준")
+                        st.markdown(
+                            """
+<div style="background:#F5F7FB;border:1px solid #D0D4DD;border-radius:8px;padding:14px 16px;font-size:0.9rem;line-height:1.7;">
+<b>가동률</b> = 실공수시간 ÷ 목표공수시간 × 100<br><br>
+<b>목표공수</b> : [8시간 × M/M × 해당 기간 Working Day − 비가동시간]<br><br>
+<b>비가동시간</b> : 실제 업무 수행이 불가능한 시간<br>
+<span style="color:#666;">(법정 휴무일, 전사 행사, 휴가, 병가 등)</span>
+</div>
+                            """,
+                            unsafe_allow_html=True,
                         )
-                        safe_name = re.sub(r"[^\w가-힣\-]", "_", detail["report_title"])
-                        st.download_button(
-                            "📄 PDF로 다운로드",
-                            data=pdf_bytes,
-                            file_name=f"{safe_name}.pdf",
-                            mime="application/pdf",
-                        )
-                    except Exception as e:
-                        st.warning(f"PDF 생성 중 문제가 발생했습니다: {e}")
-        else:
-            st.info("저장된 보고서가 없습니다.")
+                except Exception:
+                    pass
+
+            special_note_saved = detail.get("special_note")
+            if special_note_saved:
+                st.info(f"📝 특이사항: {special_note_saved}")
+
+            st.dataframe(st_view, use_container_width=True, height=680)
+
+            # ── 범례 (PDF와 동일) ──
+            st.markdown(LEGEND_HTML, unsafe_allow_html=True)
+
+            # ── PDF 다운로드 ──
+            st.markdown("---")
+            try:
+                pdf_columns = list(df_detail.columns)
+                pdf_rows = df_detail.to_dict(orient="records")
+                # 값 문자열화 (MM/실공수 포맷 유지)
+                for r in pdf_rows:
+                    for k, v in list(r.items()):
+                        if k == "MM" and isinstance(v, (int, float)):
+                            r[k] = f"{v:.2f}"
+                        elif hours_col and k == hours_col and isinstance(v, (int, float)):
+                            r[k] = f"{v:,.1f}h"
+                        elif v is None:
+                            r[k] = ""
+                        else:
+                            r[k] = str(v)
+
+                # 메타 구성
+                total_row_data = next(
+                    (r for r in pdf_rows if r.get("구분") == "Total"), {})
+                pdf_meta = {
+                    "생성일": str(detail.get("created_at", ""))[:10],
+                    "총 MM": f"{detail.get('total_mm', 0):.2f}",
+                    "총 실공수": f"{detail.get('total_hours', 0):,.1f}h",
+                }
+                # Total 가동률 (월 컬럼에서 추출)
+                month_col_name = next(
+                    (c for c in pdf_columns if "가동률" in c and "월" in c), None)
+                if month_col_name and total_row_data:
+                    pdf_meta["Total 가동률"] = total_row_data.get(month_col_name, "")
+
+                # 특이사항
+                if detail.get("special_note"):
+                    pdf_meta["특이사항"] = detail["special_note"]
+
+                # 가동률 요약(구간별) — 저장된 summary_data 사용
+                if detail.get("summary_data"):
+                    sd = detail["summary_data"]
+                    # 컬럼 순서 정규화
+                    norm = []
+                    for row in sd:
+                        norm.append({
+                            "구분": row.get("구분", ""),
+                            "MM": row.get("MM", ""),
+                            "월 가동률(평균)": row.get("월 가동률(평균)", ""),
+                        })
+                    pdf_meta["summary_rows"] = norm
+
+                pdf_bytes = build_report_pdf(
+                    detail["report_title"], pdf_rows, pdf_columns, pdf_meta
+                )
+                safe_name = re.sub(r"[^\w가-힣\-]", "_", detail["report_title"])
+                st.download_button(
+                    "📄 PDF로 다운로드",
+                    data=pdf_bytes,
+                    file_name=f"{safe_name}.pdf",
+                    mime="application/pdf",
+                )
+            except Exception as e:
+                st.warning(f"PDF 생성 중 문제가 발생했습니다: {e}")
+    else:
+        st.info("저장된 보고서가 없습니다.")
