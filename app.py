@@ -1354,7 +1354,12 @@ elif menu == "4. 과거 보고서 저장 이력 조회":
             if special_note_saved:
                 st.info(f"📝 특이사항: {special_note_saved}")
 
-            st.dataframe(st_view, use_container_width=True, height=680)
+            # after — 행 수에 맞춰 높이 자동 계산
+            st.dataframe(
+                st_view,
+                use_container_width=True,
+                height=(len(df_detail) + 1) * 35 + 3,   # 데이터행 + 헤더1행, 행당 35px
+            )
 
             # ── 범례 (PDF와 동일) ──
             st.markdown(LEGEND_HTML, unsafe_allow_html=True)
