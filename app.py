@@ -59,7 +59,8 @@ def db_query(fn, default=None, err_label="DB 작업"):
         return default
 
 
-ROLE_LIST = [
+# 기본(fallback) 직군 순서 — role_mm이 하나도 없을 때만 사용
+ROLE_LIST_DEFAULT = [
     "운영 총괄PM",
     "거버넌스",
     "SEO 검수",
@@ -75,8 +76,36 @@ ROLE_LIST = [
     "퍼블리싱",
     "UXUI 기획",
     "UXUI+QA",
-    "AMC"
+    "AMC",
 ]
+
+
+def get_role_list():
+    """role_mm에 등록된 직군 목록을 반환.
+    - 기본 순서(ROLE_LIST_DEFAULT)를 유지하고, 기본에 없는 신규 직군은 뒤에 추가
+    - role_mm이 비어 있으면 기본 리스트로 fallback (앱이 안 깨지도록)
+    ※ 캐시하지 않음: 새 직군 등록 시 다음 rerun에서 바로 드롭다운에 반영되도록.
+    """
+    rows = db_query(
+        lambda: supabase.table("role_mm").select("role").execute().data,
+        default=[], err_label="직군 목록 조회"
+    ) or []
+
+    seen = []
+    for row in rows:
+        r = (row.get("role") or "").strip()
+        if r and r not in seen:
+            seen.append(r)
+
+    if not seen:
+        return list(ROLE_LIST_DEFAULT)
+
+    ordered = [r for r in ROLE_LIST_DEFAULT if r in seen]      # 기본 순서 유지
+    extras = [r for r in seen if r not in ROLE_LIST_DEFAULT]   # 신규 직군은 뒤에
+    return ordered + extras
+
+
+ROLE_LIST = get_role_list()
 
 # 미분류(매칭 실패) 인원을 담는 가상 직군 라벨
 UNMATCHED_ROLE = "⚠️ 미분류(DB 미등록)"
@@ -574,7 +603,7 @@ def build_report_pdf(title, rows, columns, meta=None):
     ]], colWidths=[45 * mm, 45 * mm, 45 * mm])
     legend.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
     story.append(legend)
-    
+
     # 특이사항
     note = meta.get("특이사항")
     if note:
@@ -736,7 +765,8 @@ if menu == "1. 기본정보 관리 (인력/MM)":
     st.caption(
         "직군별 MM을 적용 '월' 단위로 등록합니다. 리포트는 '데이터 기간의 월 이전(같은 월 포함)에 등록된 가장 최근 값'을 사용합니다. "
         "(예: 9월 리포트인데 9월 등록이 없으면 8월 등록값 적용). "
-        "※ 등록값이 하나도 없으면 인력 목록의 MM 합계로 자동 대체됩니다."
+        "※ 등록값이 하나도 없으면 인력 목록의 MM 합계로 자동 대체됩니다. "
+        "※ 직군 목록은 여기에 등록된 직군에서 가져옵니다. 새 직군은 아래 '새 직군 직접 입력'으로 추가하세요."
     )
 
     with st.form("add_role_mm_form", clear_on_submit=True):
@@ -746,10 +776,19 @@ if menu == "1. 기본정보 관리 (인력/MM)":
                                 index=1, key="role_mm_year")
         rm_month = rc2.selectbox("적용 월", list(range(1, 13)),
                                  index=date.today().month - 1, key="role_mm_month")
-        rm_role = rc3.selectbox("직군", ROLE_LIST, key="role_mm_role")
+        rm_role_sel = rc3.selectbox("직군 (기존 목록)", ROLE_LIST, key="role_mm_role")
         rm_mm = rc4.number_input("직군 MM", min_value=0.0, max_value=50.0, value=1.0, step=0.05, key="role_mm_val")
 
+        # 폼 안에서는 selectbox를 바꿔도 즉시 rerun되지 않으므로,
+        # 조건부 표시 대신 '새 직군' 입력칸을 항상 띄우고 값이 있으면 우선 적용
+        rm_role_new = st.text_input(
+            "➕ 새 직군 직접 입력 (입력하면 위 '직군' 선택 대신 이 값으로 등록됩니다)",
+            key="role_mm_role_new"
+        )
+
         if st.form_submit_button("직군 MM 등록"):
+            # 새 직군 입력이 있으면 우선, 없으면 셀렉트박스 선택값 사용
+            rm_role = rm_role_new.strip() if rm_role_new.strip() else rm_role_sel
             # 적용월의 1일로 저장 (DATE 스키마 유지, 시점조회는 월 기준으로 동작)
             apply_first = date(int(rm_year), int(rm_month), 1)
             ok = db_query(
