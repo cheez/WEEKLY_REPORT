@@ -66,7 +66,7 @@ ROLE_LIST_DEFAULT = [
     "SEO 검수",
     "플랫폼PM(브랜드웹 ICS+카페24)",
     "플랫폼PM(브랜드웹 Shopify)",
-    "플랫폼PM(D2C Shopify)",
+    "플랫폼PM(Shopify)",
     "플랫폼PM(D2C magento)",
     "통합 플랫폼•솔루션 컨설턴트",
     "Shopify Front-end 유지보수",
