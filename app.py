@@ -847,16 +847,17 @@ elif menu == "2. 휴가/반차 수시 관리":
     tab_bulk, tab_single = st.tabs(["📋 텍스트로 단체(일괄) 등록", "✏️ 1건씩 직접 등록"])
 
     # ── 1. 텍스트 일괄 등록 탭 ──
+# ── 1. 텍스트 일괄 등록 탭 ──
     with tab_bulk:
         st.markdown("##### 엑셀 / 메신저 텍스트 복사 후 붙여넣기")
         st.caption(
-            "줄바꿈으로 구분되며, 각 줄은 **[이름 / 날짜 / 구분(선택) / 사유(선택)]** 순서로 인식합니다.\n\n"
+            "줄바꿈으로 구분되며, 각 줄은 **[이름 / 날짜 / 구분(선택)]** 순서로 인식합니다. (사유는 '개인사유'로 자동 등록)\n\n"
             "구분자: **탭(`\\t`)**, **쉼표(`,`)**, **슬래시(`/`)**, **공백(스페이스)** 모두 지원합니다."
         )
 
         sample_placeholder = (
-            "홍길동\t2026-08-14\t전일휴가\t개인사유\n"
-            "이순신\t2026-08-17\t반차\t병원 진료\n"
+            "홍길동\t2026-08-14\t전일휴가\n"
+            "이순신\t2026-08-17\t반차\n"
             "강감찬\t2026-08-18\n"
             "김유신 2026-08-19 반반차"
         )
@@ -867,7 +868,8 @@ elif menu == "2. 휴가/반차 수시 관리":
             key="bulk_vac_input"
         )
 
-        col_b1, col_b2 = st.columns([4, 1.2])
+        # vertical_alignment="bottom"으로 버튼과 셀렉트박스 높이 완벽 정렬
+        col_b1, col_b2 = st.columns([4, 1.2], vertical_alignment="bottom")
         default_type = col_b1.selectbox(
             "구분 미지정 시 기본값",
             ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"],
@@ -913,28 +915,21 @@ elif menu == "2. 휴가/반차 수시 관리":
 
                 # 구분 파싱 (전일/반차/반반차 판별)
                 p_type = default_type
-                p_reason = "개인사유"
-
                 if len(parts) >= 3:
                     token = parts[2]
                     if "반반차" in token:
                         p_type = "반반차 (2h)"
                     elif "반차" in token:
                         p_type = "반차 (4h)"
-                    elif "전일" in token or "연차" in token or "휴가" in token:
+                    elif any(k in token for k in ["전일", "연차", "휴가"]):
                         p_type = "전일휴가 (8h)"
-                    else:
-                        # 3번째 토큰이 구분이 아니라 사유인 경우
-                        p_reason = token
 
-                if len(parts) >= 4:
-                    p_reason = " ".join(parts[3:])
-
+                # 사유는 별도 입력 여부와 관계없이 모두 '개인사유'로 고정
                 rows_to_insert.append({
                     "name": p_name,
                     "v_date": str(parsed_dt),
                     "v_type": p_type,
-                    "reason": p_reason
+                    "reason": "개인사유"
                 })
 
             if parse_errors:
@@ -952,7 +947,7 @@ elif menu == "2. 휴가/반차 수시 관리":
                     if ok is not None:
                         st.success(f"총 {len(rows_to_insert)}건의 휴가가 성공적으로 등록되었습니다!")
                         st.rerun()
-
+                        
     # ── 2. 단건 등록 탭 (기존 폼 유지) ──
     with tab_single:
         with st.form("add_v_form", clear_on_submit=True):
