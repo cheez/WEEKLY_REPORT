@@ -947,7 +947,7 @@ elif menu == "2. 휴가/반차 수시 관리":
                     if ok is not None:
                         st.success(f"총 {len(rows_to_insert)}건의 휴가가 성공적으로 등록되었습니다!")
                         st.rerun()
-                        
+
     # ── 2. 단건 등록 탭 (기존 폼 유지) ──
     with tab_single:
         with st.form("add_v_form", clear_on_submit=True):
@@ -1224,14 +1224,23 @@ elif menu == "3. 엑셀 데이터 입력 및 위클리 리포트 생성":
             lambda r: get_status(r["월 누적 가동률_num"], r["MM"]), axis=1
         )
 
-        # ── 표 구성: MM | 구분 | 월 목표공수 | 누적 실공수 | 월 가동률 | 판단 | 주차들 ──
+        # ── [추가] 목표 대비(±%p) 계산: 월 가동률 - 100% ──
+        def _calc_diff(r):
+            if r["MM"] <= 0:
+                return "-"
+            diff = int(r["월 누적 가동률_num"]) - 100
+            return f"{diff:+d}%p" if diff != 0 else "0%p"
+
+        report_df["목표 대비(±%p)"] = report_df.apply(_calc_diff, axis=1)
+
+        # ── 표 구성: MM | 구분 | 월 목표공수 | 누적 실공수 | 월 가동률 | 주차들 | 판단 | 목표 대비 ──
         month_col = f"{month_label} 가동률(%)"
         report_df[month_col] = report_df["월 누적 가동률(%)"]
 
         final_cols = (
             ["Role", "MM", "월목표공수", "월실공수", month_col]
             + calculated_week_cols
-            + ["판단"]
+            + ["판단", "목표 대비(±%p)"]
         )
         display_df = report_df[final_cols].copy()
         display_df.rename(columns={
@@ -1260,8 +1269,12 @@ elif menu == "3. 엑셀 데이터 입력 및 위클리 리포트 생성":
             total_dict[disp] = f"{round(w_sum / w_den * 100)}%" if w_den > 0 else "-"
 
         total_dict["판단"] = get_status(total_month_rate, total_mm)
+        # Total의 목표 대비(±%p)
+        total_diff = total_month_rate - 100
+        total_dict["목표 대비(±%p)"] = f"{total_diff:+d}%p" if total_mm > 0 else "-"
 
         total_row = pd.DataFrame([total_dict])
+
         # Total 행을 맨 위로 + 컬럼 순서를 display_df와 동일하게 고정
         final_view = pd.concat([total_row, display_df], ignore_index=True)
         final_view = final_view[display_df.columns.tolist()]
@@ -1432,15 +1445,30 @@ elif menu == "4. 과거 보고서 저장 이력 조회":
 
             # ── 컬럼 순서를 메뉴3과 동일하게 재정렬 ──
             #   구분 | MM | 월 목표공수 | 누적 실공수 | 월 가동률 | 주차들 | 판단
+# ── [추가] 과거 저장본에 목표 대비 컬럼이 없으면 자동 계산 ──
             cols_now = list(df_detail.columns)
-            week_cols_d = [c for c in cols_now if re.search(r"\d+\s*W", str(c))]
             rate_cols_d = [c for c in cols_now
-                           if "가동률" in str(c) and "월" in str(c) and c not in week_cols_d]
+                           if "가동률" in str(c) and "월" in str(c) and not re.search(r"\d+\s*W", str(c))]
+
+            if "목표 대비(±%p)" not in df_detail.columns and rate_cols_d:
+                m_col = rate_cols_d[0]
+                def _calc_hist_diff(row):
+                    val = str(row.get(m_col, ""))
+                    m = re.search(r"(-?\d+)", val)
+                    if m:
+                        diff = int(m.group(1)) - 100
+                        return f"{diff:+d}%p" if diff != 0 else "0%p"
+                    return "-"
+                df_detail["목표 대비(±%p)"] = df_detail.apply(_calc_hist_diff, axis=1)
+                cols_now = list(df_detail.columns)
+
+            # ── 컬럼 순서를 메뉴3과 동일하게 재정렬 ──
+            #   구분 | MM | 월 목표공수 | 누적 실공수 | 월 가동률 | 주차들 | 판단 | 목표 대비
+            week_cols_d = [c for c in cols_now if re.search(r"\d+\s*W", str(c))]
             lead = [c for c in ["구분", "MM"] if c in cols_now]
             mid = [c for c in [target_col, hours_col] if c] + rate_cols_d
-            tail = [c for c in ["판단"] if c in cols_now]
+            tail = [c for c in ["판단", "목표 대비(±%p)"] if c in cols_now]
             ordered = lead + mid + week_cols_d + tail
-            # 빠진 컬럼 있으면 뒤에 붙임 (안전)
             ordered += [c for c in cols_now if c not in ordered]
             df_detail = df_detail[ordered]
 
