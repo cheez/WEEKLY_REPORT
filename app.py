@@ -832,6 +832,9 @@ if menu == "1. 기본정보 관리 (인력/MM)":
 # =========================================================
 # 메뉴 2: 휴가/반차 수시 관리 (관리자 전용)
 # =========================================================
+# =========================================================
+# 메뉴 2: 휴가/반차 수시 관리 (관리자 전용)
+# =========================================================
 elif menu == "2. 휴가/반차 수시 관리":
     st.title("📅 휴가 / 반차 수시 일정 관리")
     members_data = db_query(
@@ -840,31 +843,142 @@ elif menu == "2. 휴가/반차 수시 관리":
     )
     member_names = [m["name"] for m in members_data] if members_data else []
 
-    with st.form("add_v_form", clear_on_submit=True):
-        # 첫 번째 라인 (이름, 날짜, 구분)
-        col1, col2, col3 = st.columns(3)
-        v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
-        v_date = col2.date_input("날짜", date.today())
-        v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"])
+    # 단건 등록과 일괄 등록을 분리하는 탭 구성
+    tab_bulk, tab_single = st.tabs(["📋 텍스트로 단체(일괄) 등록", "✏️ 1건씩 직접 등록"])
 
-        # 두 번째 라인 (사유 + 휴가 추가 버튼을 한 줄 및 하단 정렬)
-        col_r1, col_r2 = st.columns([5, 1], vertical_alignment="bottom")
-        v_reason = col_r1.text_input("사유", "개인사유")
-        submit_clicked = col_r2.form_submit_button("휴가 추가", use_container_width=True)
+    # ── 1. 텍스트 일괄 등록 탭 ──
+    with tab_bulk:
+        st.markdown("##### 엑셀 / 메신저 텍스트 복사 후 붙여넣기")
+        st.caption(
+            "줄바꿈으로 구분되며, 각 줄은 **[이름 / 날짜 / 구분(선택) / 사유(선택)]** 순서로 인식합니다.\n\n"
+            "구분자: **탭(`\\t`)**, **쉼표(`,`)**, **슬래시(`/`)**, **공백(스페이스)** 모두 지원합니다."
+        )
 
-        if submit_clicked:
-            if v_name:
-                ok = db_query(
-                    lambda: supabase.table("vacations").insert({
-                        "name": v_name, "v_date": str(v_date), "v_type": v_type, "reason": v_reason
-                    }).execute(),
-                    default=None, err_label="휴가 저장"
-                )
-                if ok is not None:
-                    st.success("휴가 정보가 저장되었습니다.")
-                    st.rerun()
+        sample_placeholder = (
+            "홍길동\t2026-08-14\t전일휴가\t개인사유\n"
+            "이순신\t2026-08-17\t반차\t병원 진료\n"
+            "강감찬\t2026-08-18\n"
+            "김유신 2026-08-19 반반차"
+        )
+        bulk_text = st.text_area(
+            "휴가 데이터 붙여넣기",
+            height=160,
+            placeholder=sample_placeholder,
+            key="bulk_vac_input"
+        )
 
+        col_b1, col_b2 = st.columns([4, 1.2])
+        default_type = col_b1.selectbox(
+            "구분 미지정 시 기본값",
+            ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"],
+            key="bulk_default_type"
+        )
+        parse_btn = col_b2.button("📋 데이터 검증 및 등록 준비", use_container_width=True)
 
+        if bulk_text.strip():
+            rows_to_insert = []
+            parse_errors = []
+
+            for line_idx, line in enumerate(bulk_text.strip().splitlines(), start=1):
+                clean_line = line.strip()
+                if not clean_line or clean_line.startswith("#"):
+                    continue
+
+                # 탭, 쉼표, 슬래시, 다중 공백 기준으로 분리
+                parts = re.split(r"[\t,/]|\s{2,}|\s+", clean_line)
+                parts = [p.strip() for p in parts if p.strip()]
+
+                if len(parts) < 2:
+                    parse_errors.append(f"• {line_idx}행: 데이터 부족 → '{clean_line}' (이름과 날짜 필수)")
+                    continue
+
+                p_name = parts[0]
+                raw_date = parts[1]
+
+                # 날짜 형식 파싱 (YYYY-MM-DD, YYYY.MM.DD, YYYYMMDD 등 지원)
+                parsed_dt = None
+                date_clean = re.sub(r"[.\/]", "-", raw_date)
+                for fmt in ["%Y-%m-%d", "%Y%m%d", "%m-%d", "%Y-%m-%d"]:
+                    try:
+                        parsed_dt = datetime.strptime(date_clean, fmt).date()
+                        if fmt == "%m-%d":
+                            parsed_dt = parsed_dt.replace(year=date.today().year)
+                        break
+                    except ValueError:
+                        pass
+
+                if not parsed_dt:
+                    parse_errors.append(f"• {line_idx}행: 유효하지 않은 날짜 형식 → '{raw_date}'")
+                    continue
+
+                # 구분 파싱 (전일/반차/반반차 판별)
+                p_type = default_type
+                p_reason = "개인사유"
+
+                if len(parts) >= 3:
+                    token = parts[2]
+                    if "반반차" in token:
+                        p_type = "반반차 (2h)"
+                    elif "반차" in token:
+                        p_type = "반차 (4h)"
+                    elif "전일" in token or "연차" in token or "휴가" in token:
+                        p_type = "전일휴가 (8h)"
+                    else:
+                        # 3번째 토큰이 구분이 아니라 사유인 경우
+                        p_reason = token
+
+                if len(parts) >= 4:
+                    p_reason = " ".join(parts[3:])
+
+                rows_to_insert.append({
+                    "name": p_name,
+                    "v_date": str(parsed_dt),
+                    "v_type": p_type,
+                    "reason": p_reason
+                })
+
+            if parse_errors:
+                st.error("일부 행에서 파싱 오류가 발생했습니다:\n" + "\n".join(parse_errors))
+
+            if rows_to_insert:
+                st.markdown(f"**미리보기 (총 {len(rows_to_insert)}건)**")
+                st.dataframe(pd.DataFrame(rows_to_insert), use_container_width=True, hide_index=True)
+
+                if st.button(f"🚀 위 {len(rows_to_insert)}건 한 번에 DB 등록하기", type="primary"):
+                    ok = db_query(
+                        lambda: supabase.table("vacations").insert(rows_to_insert).execute(),
+                        default=None, err_label="휴가 일괄 저장"
+                    )
+                    if ok is not None:
+                        st.success(f"총 {len(rows_to_insert)}건의 휴가가 성공적으로 등록되었습니다!")
+                        st.rerun()
+
+    # ── 2. 단건 등록 탭 (기존 폼 유지) ──
+    with tab_single:
+        with st.form("add_v_form", clear_on_submit=True):
+            col1, col2, col3 = st.columns(3)
+            v_name = col1.selectbox("이름 선택", member_names) if member_names else col1.text_input("이름 입력")
+            v_date = col2.date_input("날짜", date.today())
+            v_type = col3.selectbox("구분", ["전일휴가 (8h)", "반차 (4h)", "반반차 (2h)"])
+
+            col_r1, col_r2 = st.columns([5, 1], vertical_alignment="bottom")
+            v_reason = col_r1.text_input("사유", "개인사유")
+            submit_clicked = col_r2.form_submit_button("휴가 추가", use_container_width=True)
+
+            if submit_clicked:
+                if v_name:
+                    ok = db_query(
+                        lambda: supabase.table("vacations").insert({
+                            "name": v_name, "v_date": str(v_date), "v_type": v_type, "reason": v_reason
+                        }).execute(),
+                        default=None, err_label="휴가 저장"
+                    )
+                    if ok is not None:
+                        st.success("휴가 정보가 저장되었습니다.")
+                        st.rerun()
+
+    # ── 등록된 휴가 내역 테이블 및 삭제 영역 ──
+    st.markdown("---")
     st.subheader("📜 등록된 휴가 내역")
     st.info("• 대체 인력이 있는 기간은 휴가 기입 하면 안됨.\n\n• 대체 인력은 투입 기간만 공수가 입력 되어야 함.")
     v_data = db_query(
@@ -876,11 +990,8 @@ elif menu == "2. 휴가/반차 수시 관리":
         df_v.columns = ["ID", "이름", "날짜", "구분", "사유"]
         st.dataframe(df_v, use_container_width=True, hide_index=True)
 
-        # ── 삭제 입력창과 버튼을 한 줄로 정렬 ──
         col_v1, col_v2 = st.columns([1, 4])
         del_v_id = col_v1.number_input("삭제할 휴가 ID 입력", min_value=1, step=1)
-
-        # 버튼 상단 여백 보정 후 배치
         col_v2.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         if col_v2.button("휴가 삭제"):
             ok = db_query(
@@ -890,7 +1001,6 @@ elif menu == "2. 휴가/반차 수시 관리":
             if ok is not None:
                 st.success("휴가 내역이 삭제되었습니다.")
                 st.rerun()
-
 # =========================================================
 # 메뉴 3: 엑셀 데이터 입력 및 위클리 보고서 생성 (동적 분석)
 # =========================================================
