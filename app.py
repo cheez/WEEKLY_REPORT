@@ -1388,13 +1388,13 @@ elif menu == "4. 과거 보고서 저장 이력 조회":
         default=[], err_label="보고서 이력 조회"
     )
 
-    if reports_data:
-        df_r = pd.DataFrame(reports_data)
-        df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
-        st.dataframe(df_r, use_container_width=True, hide_index=True)
-
-        # ── [추가] 관리자 전용 보고서 삭제 영역 (표 바로 아래) ──
+if reports_data:
+        # ── [수정] 관리자일 때만 전체 목록 표와 삭제 영역 노출 ──
         if st.session_state.user_role == "admin":
+            df_r = pd.DataFrame(reports_data)
+            df_r.columns = ["ID", "보고서 명칭", "총 MM", "총 실공수(h)", "저장일시"]
+            st.dataframe(df_r, use_container_width=True, hide_index=True)
+
             col_del1, col_del2 = st.columns([1, 4], vertical_alignment="bottom")
             del_report_id = col_del1.number_input("삭제할 보고서 ID 입력", min_value=1, step=1, key="del_rep_id")
             if col_del2.button("보고서 삭제", key="btn_del_rep"):
@@ -1412,7 +1412,7 @@ elif menu == "4. 과거 보고서 저장 이력 조회":
             for r in reports_data
         }
 
-        # selectbox 기본값은 맨 위(최신) → 진입 시 자동으로 최신 보고서가 선택됨
+        # selectbox 기본값은 맨 위(최신) → 일반 사용자는 이 셀렉트박스로 바로 상세 보고서 조회
         selected_label = st.selectbox("상세 조회할 보고서 선택", list(report_options.keys()))
         selected_id = report_options[selected_label]
 
