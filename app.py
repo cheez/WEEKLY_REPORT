@@ -1388,7 +1388,7 @@ elif menu == "4. 과거 보고서 저장 이력 조회":
         default=[], err_label="보고서 이력 조회"
     )
 
-if reports_data:
+    if reports_data:
         # ── [수정] 관리자일 때만 전체 목록 표와 삭제 영역 노출 ──
         if st.session_state.user_role == "admin":
             df_r = pd.DataFrame(reports_data)
